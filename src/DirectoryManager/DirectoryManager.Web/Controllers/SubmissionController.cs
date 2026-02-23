@@ -12,6 +12,7 @@ using DirectoryManager.Web.Constants;
 using DirectoryManager.Web.Extensions;
 using DirectoryManager.Web.Helpers;
 using DirectoryManager.Web.Models;
+using DirectoryManager.Web.Models.Submissions;
 using DirectoryManager.Web.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
@@ -490,6 +491,61 @@ namespace DirectoryManager.Web.Controllers
         public IActionResult Success()
         {
             return this.View("Success");
+        }
+
+
+        [AllowAnonymous]
+        [HttpGet("submission/findinglisting")]
+        public async Task<IActionResult> FindingListing(string? q, int? page, int pageSize = 25)
+        {
+            var term = (q ?? string.Empty).Trim();
+
+            int p = page.GetValueOrDefault(1);
+            if (p < 1) p = 1;
+
+            pageSize = Math.Clamp(pageSize, 10, 50);
+
+            var vm = new SubmissionFindingListingVm
+            {
+                Query = term,
+                HasSearched = !string.IsNullOrWhiteSpace(term),
+                Page = p,
+                PageSize = pageSize
+            };
+
+            // Search-first behavior (like Sponsorship): show the search UI only
+            if (!vm.HasSearched)
+            {
+                return this.View("FindingListing", vm);
+            }
+
+            // ✅ Includes Removed listings
+            var result = await this.directoryEntryRepository
+                .SearchIncludingRemovedAsync(term, p, pageSize)
+                .ConfigureAwait(false);
+
+            vm.TotalCount = result.TotalCount;
+
+            vm.TotalPages = vm.TotalCount == 0
+                ? 1
+                : (int)Math.Ceiling(vm.TotalCount / (double)vm.PageSize);
+
+            var now = DateTime.UtcNow;
+
+            vm.Results = (result.Items ?? new List<DirectoryManager.Data.Models.DirectoryEntry>())
+                .Select(e => new SubmissionFindingListingRowVm
+                {
+                    DirectoryEntryId = e.DirectoryEntryId,
+                    Name = e.Name ?? string.Empty,
+                    Link = e.Link,
+                    Status = e.DirectoryStatus.ToString(),
+                    Category = e.SubCategory?.Category?.Name ?? string.Empty,
+                    Subcategory = e.SubCategory?.Name ?? string.Empty,
+                    AgeDays = (int)Math.Max(0, Math.Floor((now - e.CreateDate).TotalDays))
+                })
+                .ToArray();
+
+            return this.View("FindingListing", vm);
         }
 
         [AllowAnonymous]

@@ -195,6 +195,60 @@ namespace DirectoryManager.Data.Repositories.Implementations
                 .ToListAsync(ct);
         }
 
+        public async Task<PagedResult<DirectoryEntry>> SearchIncludingRemovedAsync(string query, int page, int pageSize)
+        {
+            page = Math.Max(1, page);
+            pageSize = Math.Clamp(pageSize, 10, 50);
+
+            query = (query ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(query))
+            {
+                return new PagedResult<DirectoryEntry>
+                {
+                    Page = page,
+                    PageSize = pageSize,
+                    TotalCount = 0,
+                    Items = new List<DirectoryEntry>()
+                };
+            }
+
+            var normalized = NormalizeSearchTerm(query);
+
+            // ✅ includeRemoved = true
+            var filtered = this.BuildSearchServerSideQuery(normalized, includeRemoved: true);
+
+            var candidates = await filtered.ToListAsync().ConfigureAwait(false);
+
+            var scored = ScoreSearchCandidates(
+                    candidates,
+                    normalized.term,
+                    normalized.rootTerm,
+                    normalized.countryCode,
+                    normalized.isUrlTerm,
+                    normalized.noSlash,
+                    normalized.withSlash,
+                    normalized.hostOnly,
+                    normalized.hostNoWww,
+                    normalized.termCompact)
+                .ToList();
+
+            int total = scored.Count;
+
+            var items = scored
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .Select(x => x.Entry)
+                .ToList();
+
+            return new PagedResult<DirectoryEntry>
+            {
+                Page = page,
+                PageSize = pageSize,
+                TotalCount = total,
+                Items = items
+            };
+        }
+
         public async Task<List<CountryCountRow>> GetActiveCountryCountsForSitemapAsync(CancellationToken ct = default)
         {
             // Mirror your "active" definition used in sitemap
@@ -696,7 +750,7 @@ namespace DirectoryManager.Data.Repositories.Implementations
             var normalized = NormalizeSearchTerm(term);
 
             // 2) build server-side query (same predicates as before)
-            var filtered = this.BuildSearchServerSideQuery(normalized);
+            var filtered = this.BuildSearchServerSideQuery(normalized, false);
 
             // 3) materialize + score in-memory (same scoring as before)
             var candidates = await filtered.ToListAsync().ConfigureAwait(false);
@@ -807,12 +861,12 @@ namespace DirectoryManager.Data.Repositories.Implementations
             };
         }
 
-        private IQueryable<DirectoryEntry> BuildSearchServerSideQuery(SearchTermInfo n)
+        private IQueryable<DirectoryEntry> BuildSearchServerSideQuery(SearchTermInfo n, bool includeRemoved)
         {
             // 1) server-side filter (kept & extended with URL-variant + compact matches)
             return this.BaseQuery()
                 .Where(e =>
-                    e.DirectoryStatus != DirectoryStatus.Removed &&
+                    (includeRemoved || e.DirectoryStatus != DirectoryStatus.Removed) &&
                     (
 
                         // Country
