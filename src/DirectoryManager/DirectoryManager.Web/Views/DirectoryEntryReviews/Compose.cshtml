@@ -40,11 +40,11 @@
 
         <!-- ✅ Single textbox for either order id OR order URL -->
         <div class="mb-3">
-            <label asp-for="OrderProof" class="form-label">Order Proof (optional)</label>
+            <label asp-for="OrderProof" class="form-label">Order Proof URL (optional)</label>
             <input asp-for="OrderProof" class="form-control" maxlength="2048" />
             <span asp-validation-for="OrderProof" class="text-danger"></span>
             <div class="form-text">
-                Optional: paste an order ID or order URL for internal verification only. This will not be shown publicly. If provided, your review may go to moderation.
+                Optional: paste an order URL we can access for internal verification only. This will not be shown publicly. If provided, your review may go to moderation.
             </div>
         </div>
 
