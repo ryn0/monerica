@@ -137,6 +137,22 @@ namespace DirectoryManager.Web.Extensions
                 return BlobService.CreateAsync(blobServiceClient).GetAwaiter().GetResult();
             });
 
+
+            // add once
+            services.AddHttpClient("OrderProofVerifier", client =>
+            {
+                client.Timeout = TimeSpan.FromSeconds(6);
+                client.DefaultRequestHeaders.UserAgent.ParseAdd("MonericaReviewVerifier/1.0");
+                client.DefaultRequestHeaders.Accept.ParseAdd("*/*");
+            })
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+            {
+                AllowAutoRedirect = true,
+                AutomaticDecompression = System.Net.DecompressionMethods.GZip |
+                                         System.Net.DecompressionMethods.Deflate |
+                                         System.Net.DecompressionMethods.Brotli
+            });
+
             services.Configure<RouteOptions>(options => options.LowercaseUrls = true);
 
             services.AddIdentity<ApplicationUser, IdentityRole>()

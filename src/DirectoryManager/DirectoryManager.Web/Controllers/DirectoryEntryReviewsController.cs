@@ -1,6 +1,8 @@
-﻿using System.Security.Cryptography;
+﻿using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using DirectoryManager.Data.Enums;
+using DirectoryManager.Data.Models;
 using DirectoryManager.Data.Models.Reviews;
 using DirectoryManager.Data.Repositories.Interfaces;
 using DirectoryManager.Web.Constants;
@@ -19,12 +21,15 @@ namespace DirectoryManager.Web.Controllers
         private const string SesssionExpiredMessage = "Session expired, your reply message was not saved, please start over!";
         private static readonly char[] CodeAlphabet = StringConstants.CodeAlphabet.ToCharArray();
 
+        private const string OrderProofHttpClientName = "OrderProofVerifier";
+
         private readonly IMemoryCache cache;
         private readonly ICaptchaService captcha;
         private readonly IPgpService pgp;
         private readonly IDirectoryEntryReviewRepository directoryEntryReviewRepository;
         private readonly IDirectoryEntryRepository directoryEntryRepository;
         private readonly IUserContentModerationService moderation;
+        private readonly IHttpClientFactory httpClientFactory;
 
         public DirectoryEntryReviewsController(
             IDirectoryEntryReviewRepository repo,
@@ -34,7 +39,8 @@ namespace DirectoryManager.Web.Controllers
             ICaptchaService captcha,
             IPgpService pgp,
             IDirectoryEntryRepository directoryEntryRepository,
-            IUserContentModerationService moderation)
+            IUserContentModerationService moderation,
+            IHttpClientFactory httpClientFactory)
             : base(trafficLogRepository, userAgentCacheService, cache)
         {
             this.directoryEntryReviewRepository = repo;
@@ -43,6 +49,7 @@ namespace DirectoryManager.Web.Controllers
             this.pgp = pgp;
             this.directoryEntryRepository = directoryEntryRepository;
             this.moderation = moderation;
+            this.httpClientFactory = httpClientFactory;
         }
 
         [HttpGet("begin")]
@@ -66,7 +73,7 @@ namespace DirectoryManager.Web.Controllers
         {
             if (!this.TryGetFlow(flowId, out var state))
             {
-                return this.BadRequest(SesssionExpiredMessage );
+                return this.BadRequest(SesssionExpiredMessage);
             }
 
             this.ViewBag.FlowId = flowId;
@@ -82,7 +89,7 @@ namespace DirectoryManager.Web.Controllers
         {
             if (!this.TryGetFlow(flowId, out var state))
             {
-                return this.BadRequest(SesssionExpiredMessage );
+                return this.BadRequest(SesssionExpiredMessage);
             }
 
             if (!this.captcha.IsValid(this.Request))
@@ -104,7 +111,7 @@ namespace DirectoryManager.Web.Controllers
         {
             if (!this.TryGetFlow(flowId, out var state))
             {
-                return this.BadRequest(SesssionExpiredMessage );
+                return this.BadRequest(SesssionExpiredMessage);
             }
 
             if (!state.CaptchaOk)
@@ -123,7 +130,7 @@ namespace DirectoryManager.Web.Controllers
         {
             if (!this.TryGetFlow(flowId, out var state))
             {
-                return this.BadRequest(SesssionExpiredMessage );
+                return this.BadRequest(SesssionExpiredMessage);
             }
 
             if (!state.CaptchaOk)
@@ -149,9 +156,6 @@ namespace DirectoryManager.Web.Controllers
             state.PgpArmored = pgpArmored;
             state.PgpFingerprint = fp;
 
-            // NOTE: ReviewFlowState must have:
-            //   public string? ChallengeCode { get; set; }
-            //   public int VerifyAttempts { get; set; }
             state.ChallengeCode = expectedNormalized;
             state.ChallengeCiphertext = cipher;
             state.VerifyAttempts = 0;
@@ -165,7 +169,7 @@ namespace DirectoryManager.Web.Controllers
         {
             if (!this.TryGetFlow(flowId, out var state))
             {
-                return this.BadRequest(SesssionExpiredMessage );
+                return this.BadRequest(SesssionExpiredMessage);
             }
 
             if (string.IsNullOrWhiteSpace(state.ChallengeCiphertext))
@@ -186,7 +190,7 @@ namespace DirectoryManager.Web.Controllers
         {
             if (!this.TryGetFlow(flowId, out var state))
             {
-                return this.BadRequest(SesssionExpiredMessage );
+                return this.BadRequest(SesssionExpiredMessage);
             }
 
             if (string.IsNullOrWhiteSpace(state.ChallengeCode))
@@ -228,7 +232,7 @@ namespace DirectoryManager.Web.Controllers
         {
             if (!this.TryGetFlow(flowId, out var state))
             {
-                return this.BadRequest(SesssionExpiredMessage );
+                return this.BadRequest(SesssionExpiredMessage);
             }
 
             if (!state.ChallengeSolved)
@@ -255,7 +259,7 @@ namespace DirectoryManager.Web.Controllers
         {
             if (!this.TryGetFlow(flowId, out var flow))
             {
-                return this.BadRequest(SesssionExpiredMessage );
+                return this.BadRequest(SesssionExpiredMessage);
             }
 
             if (!flow.ChallengeSolved)
@@ -303,14 +307,28 @@ namespace DirectoryManager.Web.Controllers
             // ✅ single textbox parsing: OrderProof -> OrderId/OrderUrl
             ApplyOrderProof(entity, input.OrderProof);
 
-            // ✅ force pending if proof is supplied, regardless of moderation outcome
             var hasOrderProof =
                 !string.IsNullOrWhiteSpace(entity.OrderId) ||
                 !string.IsNullOrWhiteSpace(entity.OrderUrl);
 
-            entity.ModerationStatus = (mod.NeedsManualReview || hasOrderProof)
+            // ✅ NEW: If OrderUrl is same-domain + returns HTTP 200, auto-approve (unless mod needs manual review)
+            var proofAutoApproved = false;
+
+            if (!mod.NeedsManualReview && !string.IsNullOrWhiteSpace(entity.OrderUrl))
+            {
+                var entry = await this.directoryEntryRepository.GetByIdAsync(flow.DirectoryEntryId);
+                if (entry != null)
+                {
+                    proofAutoApproved = await this.TryVerifyOrderUrlForEntryAsync(entry, entity.OrderUrl!, ct);
+                }
+            }
+
+            // ✅ moderation still wins
+            entity.ModerationStatus = mod.NeedsManualReview
                 ? ReviewModerationStatus.Pending
-                : ReviewModerationStatus.Approved;
+                : (hasOrderProof
+                    ? (proofAutoApproved ? ReviewModerationStatus.Approved : ReviewModerationStatus.Pending)
+                    : ReviewModerationStatus.Approved);
 
             await this.directoryEntryReviewRepository.AddAsync(entity, ct);
 
@@ -369,7 +387,6 @@ namespace DirectoryManager.Web.Controllers
                 ModerationStatus = ReviewModerationStatus.Pending
             };
 
-            // ✅ single textbox parsing: OrderProof -> OrderId/OrderUrl
             ApplyOrderProof(entity, input.OrderProof);
 
             try
@@ -399,9 +416,7 @@ namespace DirectoryManager.Web.Controllers
                 return this.NotFound();
             }
 
-            // NOTE: this admin Edit action is still using the entity directly.
-            // If you switch admin edit to a VM (recommended for tags), map OrderProof similarly.
-            item.OrderId = item.OrderId; // no-op, just clarifying
+            item.OrderId = item.OrderId;
             item.OrderUrl = item.OrderUrl;
 
             return this.View(item);
@@ -422,10 +437,8 @@ namespace DirectoryManager.Web.Controllers
                 return this.View(model);
             }
 
-            // ✅ If you keep posting entity, we still parse the single textbox separately
             ApplyOrderProof(model, orderProof);
 
-            // Optional: if admin adds proof and review is approved, force back to pending
             var hasProof = !string.IsNullOrWhiteSpace(model.OrderId) || !string.IsNullOrWhiteSpace(model.OrderUrl);
             if (hasProof && model.ModerationStatus == ReviewModerationStatus.Approved)
             {
@@ -454,6 +467,269 @@ namespace DirectoryManager.Web.Controllers
         {
             await this.directoryEntryReviewRepository.DeleteAsync(id, ct);
             return this.RedirectToAction(nameof(this.Index));
+        }
+
+        // =========================
+        // ✅ Order proof auto-approval
+        // =========================
+
+        private async Task<bool> TryVerifyOrderUrlForEntryAsync(DirectoryEntry entry, string orderUrl, CancellationToken ct)
+        {
+            if (string.IsNullOrWhiteSpace(orderUrl))
+            {
+                return false;
+            }
+
+            // Listing website must exist and be http(s)
+            var entryWebsite = TryGetEntryWebsiteUri(entry);
+            if (entryWebsite is null)
+            {
+                return false;
+            }
+
+            if (!Uri.TryCreate(orderUrl.Trim(), UriKind.Absolute, out var orderUri) ||
+                (!orderUri.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase) &&
+                 !orderUri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase)))
+            {
+                return false;
+            }
+
+            // Same domain (host match or subdomain match either direction)
+            if (!HostsShareDomain(entryWebsite.Host, orderUri.Host))
+            {
+                return false;
+            }
+
+            // Basic SSRF safety
+            if (!await IsSafePublicHttpTargetAsync(orderUri, ct))
+            {
+                return false;
+            }
+
+            // Must return HTTP 200 OK
+            return await this.UrlReturns200Async(orderUri, ct);
+        }
+
+        private static Uri? TryGetEntryWebsiteUri(DirectoryEntry entry)
+        {
+            // ✅ CHANGE THIS if your field name differs:
+            // e.g. entry.Url, entry.WebsiteUrl, etc.
+            var raw = (entry.Link ?? string.Empty).Trim();
+
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return null;
+            }
+
+            // If they store "example.com" without scheme, assume https
+            if (Uri.TryCreate(raw, UriKind.Absolute, out var abs) &&
+                (abs.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase) ||
+                 abs.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase)))
+            {
+                return abs;
+            }
+
+            if (Uri.TryCreate("https://" + raw.TrimStart('/'), UriKind.Absolute, out var https) &&
+                (https.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase) ||
+                 https.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase)))
+            {
+                return https;
+            }
+
+            return null;
+        }
+
+        private static bool HostsShareDomain(string a, string b)
+        {
+            var ha = NormalizeHost(a);
+            var hb = NormalizeHost(b);
+
+            if (string.IsNullOrWhiteSpace(ha) || string.IsNullOrWhiteSpace(hb))
+            {
+                return false;
+            }
+
+            if (ha.Equals(hb, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            // allow subdomain either direction:
+            // shop.example.com <-> example.com
+            return ha.EndsWith("." + hb, StringComparison.OrdinalIgnoreCase) ||
+                   hb.EndsWith("." + ha, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string NormalizeHost(string host)
+        {
+            var h = (host ?? string.Empty).Trim().TrimEnd('.');
+
+            if (h.StartsWith("www.", StringComparison.OrdinalIgnoreCase))
+            {
+                h = h.Substring(4);
+            }
+
+            return h;
+        }
+
+        private async Task<bool> UrlReturns200Async(Uri uri, CancellationToken ct)
+        {
+            try
+            {
+                var client = this.httpClientFactory.CreateClient(OrderProofHttpClientName);
+
+                // Prefer HEAD (cheap); fallback to GET if not allowed
+                using (var head = new HttpRequestMessage(HttpMethod.Head, uri))
+                using (var resp = await client.SendAsync(head, HttpCompletionOption.ResponseHeadersRead, ct))
+                {
+                    if (resp.StatusCode == HttpStatusCode.OK)
+                    {
+                        return true;
+                    }
+
+                    if (resp.StatusCode != HttpStatusCode.MethodNotAllowed)
+                    {
+                        return false;
+                    }
+                }
+
+                using (var get = new HttpRequestMessage(HttpMethod.Get, uri))
+                {
+                    // try to avoid downloading a big page
+                    get.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 0);
+
+                    using var resp2 = await client.SendAsync(get, HttpCompletionOption.ResponseHeadersRead, ct);
+                    return resp2.StatusCode == HttpStatusCode.OK;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static async Task<bool> IsSafePublicHttpTargetAsync(Uri uri, CancellationToken ct)
+        {
+            if (uri is null)
+            {
+                return false;
+            }
+
+            if (uri.UserInfo?.Length > 0)
+            {
+                return false;
+            }
+
+            if (uri.IsLoopback)
+            {
+                return false;
+            }
+
+            var host = uri.DnsSafeHost;
+
+            if (string.IsNullOrWhiteSpace(host))
+            {
+                return false;
+            }
+
+            // common local-ish names
+            if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
+                host.EndsWith(".local", StringComparison.OrdinalIgnoreCase) ||
+                host.EndsWith(".internal", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            // if host is an IP literal, validate directly
+            if (IPAddress.TryParse(host, out var ipLiteral))
+            {
+                return !IsPrivateOrDisallowedIp(ipLiteral);
+            }
+
+            // resolve DNS and block any private/loopback/link-local/etc
+            try
+            {
+                var ips = await Dns.GetHostAddressesAsync(host).WaitAsync(ct);
+                if (ips is null || ips.Length == 0)
+                {
+                    return false;
+                }
+
+                foreach (var ip in ips)
+                {
+                    if (IsPrivateOrDisallowedIp(ip))
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsPrivateOrDisallowedIp(IPAddress ip)
+        {
+            if (IPAddress.IsLoopback(ip))
+            {
+                return true;
+            }
+
+            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+            {
+                var b = ip.GetAddressBytes();
+
+                // 10.0.0.0/8
+                if (b[0] == 10) return true;
+
+                // 127.0.0.0/8
+                if (b[0] == 127) return true;
+
+                // 169.254.0.0/16 (link-local)
+                if (b[0] == 169 && b[1] == 254) return true;
+
+                // 172.16.0.0/12
+                if (b[0] == 172 && b[1] >= 16 && b[1] <= 31) return true;
+
+                // 192.168.0.0/16
+                if (b[0] == 192 && b[1] == 168) return true;
+
+                // 0.0.0.0/8
+                if (b[0] == 0) return true;
+
+                // 100.64.0.0/10 (CGNAT)
+                if (b[0] == 100 && b[1] >= 64 && b[1] <= 127) return true;
+
+                return false;
+            }
+
+            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
+            {
+                if (ip.IsIPv6LinkLocal || ip.IsIPv6SiteLocal || ip.IsIPv6Multicast)
+                {
+                    return true;
+                }
+
+                // Unique local: fc00::/7
+                var b = ip.GetAddressBytes();
+                if ((b[0] & 0xFE) == 0xFC)
+                {
+                    return true;
+                }
+
+                // ::1 loopback handled above, but keep safe
+                if (ip.Equals(IPAddress.IPv6Loopback))
+                {
+                    return true;
+                }
+
+                return false;
+            }
+
+            return true;
         }
 
         // =========================
@@ -535,18 +811,31 @@ namespace DirectoryManager.Web.Controllers
                 return;
             }
 
+            // absolute http(s)
             if (Uri.TryCreate(s, UriKind.Absolute, out var uri) &&
                 (uri.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase) ||
                  uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase)))
             {
                 review.OrderUrl = s;
                 review.OrderId = null;
+                return;
             }
-            else
+
+            // allow "example.com/order/123" without scheme (assume https)
+            if (!s.Contains(' ') &&
+                s.Contains('.') &&
+                Uri.TryCreate("https://" + s.TrimStart('/'), UriKind.Absolute, out var uri2) &&
+                (uri2.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase) ||
+                 uri2.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase)))
             {
-                review.OrderId = s;
-                review.OrderUrl = null;
+                review.OrderUrl = uri2.ToString();
+                review.OrderId = null;
+                return;
             }
+
+            // otherwise treat as OrderId
+            review.OrderId = s;
+            review.OrderUrl = null;
         }
 
         private Guid CreateFlow(int directoryEntryId)
