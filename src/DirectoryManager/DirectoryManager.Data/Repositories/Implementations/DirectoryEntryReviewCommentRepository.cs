@@ -327,5 +327,27 @@ namespace DirectoryManager.Data.Repositories.Implementations
             await this.context.SaveChangesAsync(ct);
             return true;
         }
+
+        public async Task<Dictionary<string, int>> GetApprovedReplyCountsByAuthorAsync(CancellationToken ct = default)
+        {
+            var rows = await (
+                from c in this.context.DirectoryEntryReviewComments.AsNoTracking()
+                join r in this.context.DirectoryEntryReviews.AsNoTracking()
+                    on c.DirectoryEntryReviewId equals r.DirectoryEntryReviewId
+                join e in this.context.DirectoryEntries.AsNoTracking()
+                    on r.DirectoryEntryId equals e.DirectoryEntryId
+                where c.ModerationStatus == ReviewModerationStatus.Approved
+                      && r.ModerationStatus == ReviewModerationStatus.Approved
+                      && e.DirectoryStatus != DirectoryStatus.Removed
+                      && !string.IsNullOrWhiteSpace(c.AuthorFingerprint)
+                group c by c.AuthorFingerprint.Trim() into g
+                select new { Fingerprint = g.Key, Count = g.Count() }
+            ).ToListAsync(ct);
+
+            return rows.ToDictionary(
+                x => x.Fingerprint,
+                x => x.Count,
+                StringComparer.OrdinalIgnoreCase);
+        }
     }
 }

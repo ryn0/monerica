@@ -66,5 +66,12 @@ namespace DirectoryManager.Data.Repositories.Interfaces
         Task<List<CountryCountRow>> GetActiveCountryCountsForSitemapAsync(CancellationToken ct = default);
 
         Task<PagedResult<DirectoryEntry>> SearchIncludingRemovedAsync(string query, int page, int pageSize);
+
+        Task<PagedResult<DirectoryEntry>> SearchByAuthorPostsAsync(
+            string authorQuery,
+            int page,
+            int pageSize,
+            bool includeRemoved = false,
+            CancellationToken ct = default);
     }
 }

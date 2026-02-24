@@ -210,6 +210,24 @@ namespace DirectoryManager.Data.Repositories.Implementations
             return true;
         }
 
+        public async Task<Dictionary<string, int>> GetApprovedReviewCountsByAuthorAsync(CancellationToken ct = default)
+        {
+            var rows = await this.Set.AsNoTracking()
+                .Where(r =>
+                    r.ModerationStatus == ReviewModerationStatus.Approved
+                    && !string.IsNullOrWhiteSpace(r.AuthorFingerprint)
+                    && r.DirectoryEntry != null
+                    && r.DirectoryEntry.DirectoryStatus != DirectoryStatus.Removed)
+                .GroupBy(r => r.AuthorFingerprint.Trim())
+                .Select(g => new { Fingerprint = g.Key, Count = g.Count() })
+                .ToListAsync(ct);
+
+            return rows.ToDictionary(
+                x => x.Fingerprint,
+                x => x.Count,
+                StringComparer.OrdinalIgnoreCase);
+        }
+
         public async Task<Dictionary<int, int>> GetApprovedReviewPageMapAsync(
             IEnumerable<int> reviewIds,
             int pageSize,

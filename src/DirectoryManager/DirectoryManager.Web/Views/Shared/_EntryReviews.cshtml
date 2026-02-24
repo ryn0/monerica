@@ -31,6 +31,17 @@
     string DateTimeMinuteAttr(DateTime dt) => dt.ToString(DirectoryManager.Common.Constants.StringConstants.DateTimeFormat3, CultureInfo.InvariantCulture);
 }
 
+@{
+    var authorCounts = Model?.AuthorPostCountsByFingerprint
+        ?? new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+    int PostsFor(string? fp)
+    {
+        var key = (fp ?? string.Empty).Trim();
+        return authorCounts.TryGetValue(key, out var cnt) ? cnt : 0;
+    }
+}
+
 <div class="reviews-block mt-4">
     <h3 id="reviews" class="mb-3">Reviews</h3>
 
@@ -125,6 +136,7 @@
                         <span itemprop="author" itemscope itemtype="https://schema.org/Person">
                             <small class="text-muted multi-line-text">
                                 Author: @(string.IsNullOrWhiteSpace(r.DisplayName) ? r.AuthorFingerprint : r.DisplayName)
+                                <span class="ms-1">(posts: @PostsFor(r.AuthorFingerprint))</span>
                             </small>
                         </span>
                         <small class="text-muted ms-2">•</small>
@@ -162,6 +174,7 @@
                                         <div class="reply-meta">
                                             <small class="text-muted multi-line-text">
                                                 Author: @(string.IsNullOrWhiteSpace(c.DisplayName) ? c.AuthorFingerprint : c.DisplayName)
+                                                <span class="ms-1">(posts: @PostsFor(c.AuthorFingerprint))</span>
                                             </small>
                                             <small class="text-muted ms-2">•</small>
                                             @{

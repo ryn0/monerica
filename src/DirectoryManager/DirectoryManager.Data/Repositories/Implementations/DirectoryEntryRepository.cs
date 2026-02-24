@@ -2,6 +2,7 @@
 using DirectoryManager.Data.DbContextInfo;
 using DirectoryManager.Data.Enums;
 using DirectoryManager.Data.Models;
+using DirectoryManager.Data.Models.Reviews;
 using DirectoryManager.Data.Models.TransferModels;
 using DirectoryManager.Data.Repositories.Interfaces;
 using DirectoryManager.Utilities.Helpers;
@@ -800,6 +801,12 @@ namespace DirectoryManager.Data.Repositories.Implementations
 
         public async Task<PagedResult<DirectoryEntry>> SearchNonRemovedAsync(string query, int page, int pageSize)
         {
+            if (TryParseAuthorOnlyQuery(query, out var authorTerm))
+            {
+                return await this.SearchByAuthorPostsAsync(authorTerm, page, pageSize, includeRemoved: false)
+                    .ConfigureAwait(false);
+            }
+
             page = Math.Max(1, page);
             pageSize = Math.Clamp(pageSize, 10, 50);
 
@@ -815,12 +822,26 @@ namespace DirectoryManager.Data.Repositories.Implementations
                 };
             }
 
-            // This is your “real” search: includes tags/category/subcategory/etc.
+            // normal search first
             var result = await this.SearchAsync(query, page, pageSize).ConfigureAwait(false);
-
-            // Ensure paging fields are set consistently for callers that rely on them
             result.Page = page;
             result.PageSize = pageSize;
+
+            // ✅ if nothing found, try author-post search
+            if (result.TotalCount == 0)
+            {
+                var authorFallback = await this.SearchByAuthorPostsAsync(
+                    authorQuery: query,
+                    page: page,
+                    pageSize: pageSize,
+                    includeRemoved: false,
+                    ct: CancellationToken.None).ConfigureAwait(false);
+
+                if (authorFallback.TotalCount > 0)
+                {
+                    return authorFallback;
+                }
+            }
 
             return result;
         }
@@ -856,6 +877,111 @@ namespace DirectoryManager.Data.Repositories.Implementations
 
             return new PagedResult<DirectoryEntry>
             {
+                TotalCount = total,
+                Items = items
+            };
+        }
+
+        public async Task<PagedResult<DirectoryEntry>> SearchByAuthorPostsAsync(
+    string authorQuery,
+    int page,
+    int pageSize,
+    bool includeRemoved = false,
+    CancellationToken ct = default)
+        {
+            page = Math.Max(1, page);
+            pageSize = Math.Clamp(pageSize, 10, 50);
+
+            authorQuery = (authorQuery ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(authorQuery))
+            {
+                return new PagedResult<DirectoryEntry>
+                {
+                    Page = page,
+                    PageSize = pageSize,
+                    TotalCount = 0,
+                    Items = new List<DirectoryEntry>()
+                };
+            }
+
+            var n = NormalizeAuthorSearch(authorQuery);
+            IQueryable<DirectoryEntryReview> ReviewAuthorFilter(IQueryable<DirectoryEntryReview> q) =>
+            q.Where(r =>
+                r.AuthorFingerprint != null && r.AuthorFingerprint != "" &&
+                (
+                    EF.Functions.Like(r.AuthorFingerprint, n.pattern) ||
+                    (n.rootPattern != null && EF.Functions.Like(r.AuthorFingerprint, n.rootPattern)) ||
+                    (n.compactPattern != null && EF.Functions.Like(r.AuthorFingerprint.Replace(" ", ""), n.compactPattern))));
+
+            IQueryable<DirectoryEntryReviewComment> ReplyAuthorFilter(IQueryable<DirectoryEntryReviewComment> q) =>
+                q.Where(c =>
+                    c.AuthorFingerprint != null && c.AuthorFingerprint != "" &&
+                    (
+                        EF.Functions.Like(c.AuthorFingerprint, n.pattern) ||
+                        (n.rootPattern != null && EF.Functions.Like(c.AuthorFingerprint, n.rootPattern)) ||
+                        (n.compactPattern != null && EF.Functions.Like(c.AuthorFingerprint.Replace(" ", ""), n.compactPattern))));
+
+            // Base entry filter (removed or not)
+            var entryFilter = this.context.DirectoryEntries.AsNoTracking().AsQueryable();
+            if (!includeRemoved)
+            {
+                entryFilter = entryFilter.Where(e => e.DirectoryStatus != DirectoryStatus.Removed);
+            }
+
+            // ✅ Reviews grouped by EntryId -> last activity
+            var reviewsActivity =
+                from r in ReviewAuthorFilter(this.context.DirectoryEntryReviews.AsNoTracking())
+                join e in entryFilter on r.DirectoryEntryId equals e.DirectoryEntryId
+                where r.ModerationStatus == ReviewModerationStatus.Approved
+                group r by r.DirectoryEntryId into g
+                select new { EntryId = g.Key, Last = g.Max(x => x.CreateDate) };
+
+            // ✅ Replies grouped by EntryId -> last activity (requires join to review -> entry)
+            var repliesActivity =
+                from c in ReplyAuthorFilter(this.context.DirectoryEntryReviewComments.AsNoTracking())
+                join r in this.context.DirectoryEntryReviews.AsNoTracking()
+                    on c.DirectoryEntryReviewId equals r.DirectoryEntryReviewId
+                join e in entryFilter on r.DirectoryEntryId equals e.DirectoryEntryId
+                where c.ModerationStatus == ReviewModerationStatus.Approved
+                      && r.ModerationStatus == ReviewModerationStatus.Approved
+                group c by r.DirectoryEntryId into g
+                select new { EntryId = g.Key, Last = g.Max(x => x.UpdateDate ?? x.CreateDate) };
+
+            // Merge (EntryId -> max(last))
+            var merged =
+                from x in reviewsActivity.Concat(repliesActivity)
+                group x by x.EntryId into g
+                select new { EntryId = g.Key, Last = g.Max(z => z.Last) };
+
+            int total = await merged.CountAsync(ct).ConfigureAwait(false);
+            if (total == 0)
+            {
+                return new PagedResult<DirectoryEntry>
+                {
+                    Page = page,
+                    PageSize = pageSize,
+                    TotalCount = 0,
+                    Items = new List<DirectoryEntry>()
+                };
+            }
+
+            // Page the ids by latest activity
+            var pageIds = await merged
+                .OrderByDescending(x => x.Last)
+                .ThenByDescending(x => x.EntryId)
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .Select(x => x.EntryId)
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
+
+            // Load full entries with Includes, preserving order
+            var items = await this.LoadEntriesByIdsPreservingOrderAsync(pageIds).ConfigureAwait(false);
+
+            return new PagedResult<DirectoryEntry>
+            {
+                Page = page,
+                PageSize = pageSize,
                 TotalCount = total,
                 Items = items
             };
@@ -975,6 +1101,55 @@ namespace DirectoryManager.Data.Repositories.Implementations
                                EF.Functions.Like((e.ProofLink ?? "").ToLower(), n.pWithSlash) ||
                                (n.pHostOnly != "" && EF.Functions.Like((e.ProofLink ?? "").ToLower(), n.pHostOnly)) ||
                                (n.pNoWww != "" && EF.Functions.Like((e.ProofLink ?? "").ToLower(), n.pNoWww))))));
+        }
+
+        private sealed record AuthorSearchTerm(
+            string term,
+            string pattern,
+            string? rootPattern,
+            string compact,
+            string? compactPattern);
+
+        private static AuthorSearchTerm NormalizeAuthorSearch(string q)
+        {
+            var term = (q ?? string.Empty).Trim().ToLowerInvariant();
+            var pattern = $"%{term}%";
+
+            string? rootPattern = null;
+            if (term.EndsWith("s") && term.Length > 3)
+            {
+                var root = term[..^1];
+                rootPattern = $"%{root}%";
+            }
+
+            var compact = new string(term.Where(char.IsLetterOrDigit).ToArray());
+            string? compactPattern = string.IsNullOrEmpty(compact) ? null : $"%{compact}%";
+
+            return new AuthorSearchTerm(term, pattern, rootPattern, compact, compactPattern);
+        }
+
+        private static bool TryParseAuthorOnlyQuery(string q, out string authorTerm)
+        {
+            authorTerm = string.Empty;
+            q = (q ?? string.Empty).Trim();
+
+            if (q.StartsWith("author:", StringComparison.OrdinalIgnoreCase) ||
+                q.StartsWith("by:", StringComparison.OrdinalIgnoreCase) ||
+                q.StartsWith("user:", StringComparison.OrdinalIgnoreCase) ||
+                q.StartsWith("fp:", StringComparison.OrdinalIgnoreCase))
+            {
+                var idx = q.IndexOf(':');
+                authorTerm = idx >= 0 ? q[(idx + 1)..].Trim() : string.Empty;
+                return !string.IsNullOrWhiteSpace(authorTerm);
+            }
+
+            if (q.StartsWith("@", StringComparison.Ordinal))
+            {
+                authorTerm = q[1..].Trim();
+                return !string.IsNullOrWhiteSpace(authorTerm);
+            }
+
+            return false;
         }
 
         private sealed record SearchTermInfo(

@@ -31,5 +31,7 @@ namespace DirectoryManager.Web.Models.Reviews
         public int Rating1Count { get; set; }
 
         public int RatingTotalCount => this.Rating1Count + this.Rating2Count + this.Rating3Count + this.Rating4Count + this.Rating5Count;
+
+        public IReadOnlyDictionary<string, int> AuthorPostCountsByFingerprint { get; set; } = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
     }
 }

@@ -49,5 +49,7 @@ namespace DirectoryManager.Data.Repositories.Interfaces
         Task<int> CountByAuthorFingerprintAsync(string fingerprint, CancellationToken ct = default);
 
         Task<bool> DeleteOwnedAsync(int reviewId, string fingerprint, CancellationToken ct = default);
+
+        Task<Dictionary<string, int>> GetApprovedReviewCountsByAuthorAsync(CancellationToken ct = default);
     }
 }

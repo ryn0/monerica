@@ -65,5 +65,7 @@ namespace DirectoryManager.Data.Repositories.Interfaces
              CancellationToken ct = default);
 
         Task<bool> DeleteOwnedAsync(int commentId, string fingerprint, CancellationToken ct = default);
+
+        Task<Dictionary<string, int>> GetApprovedReplyCountsByAuthorAsync(CancellationToken ct = default);
     }
 }

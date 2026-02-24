@@ -1157,6 +1157,48 @@ namespace DirectoryManager.Web.Controllers
             }) ?? new List<SponsoredListing>();
         }
 
+        private async Task<IReadOnlyDictionary<string, int>> GetAuthorPostCountsCachedAsync(CancellationToken ct)
+        {
+            return await this.cache.GetOrCreateAsync(
+                DirectoryManager.Web.Constants.StringConstants.CacheKeyAuthorPostCounts,
+                async cacheEntry =>
+                {
+                    cacheEntry.AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(6);
+
+                    var reviewCounts = await this.reviewRepository.GetApprovedReviewCountsByAuthorAsync(ct);
+                    var replyCounts = await this.reviewCommentRepository.GetApprovedReplyCountsByAuthorAsync(ct);
+
+                    var merged = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+                    foreach (var kv in reviewCounts)
+                    {
+                        if (!string.IsNullOrWhiteSpace(kv.Key))
+                        {
+                            merged[kv.Key] = kv.Value;
+                        }
+                    }
+
+                    foreach (var kv in replyCounts)
+                    {
+                        if (string.IsNullOrWhiteSpace(kv.Key))
+                        {
+                            continue;
+                        }
+
+                        if (merged.TryGetValue(kv.Key, out var cur))
+                        {
+                            merged[kv.Key] = cur + kv.Value;
+                        }
+                        else
+                        {
+                            merged[kv.Key] = kv.Value;
+                        }
+                    }
+
+                    return (IReadOnlyDictionary<string, int>)merged;
+                }) ?? new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        }
+
         private DirectoryEntryViewModel BuildDirectoryEntryViewModel(
             DirectoryEntry entry,
             string link2Name,
@@ -1288,6 +1330,8 @@ namespace DirectoryManager.Web.Controllers
                 ? await this.reviewRepository.AverageRatingForEntryApprovedAsync(entry.DirectoryEntryId, ct)
                 : null;
 
+            var authorCounts = await this.GetAuthorPostCountsCachedAsync(ct);
+
             var vm = new EntryReviewsBlockViewModel
             {
                 DirectoryEntryId = entry.DirectoryEntryId,
@@ -1307,7 +1351,8 @@ namespace DirectoryManager.Web.Controllers
 
                 CurrentPage = page,
                 TotalPages = totalPages,
-                PageSize = IntegerConstants.ReviewsPageSize
+                PageSize = IntegerConstants.ReviewsPageSize,
+                AuthorPostCountsByFingerprint = authorCounts
             };
 
             return (vm, page);

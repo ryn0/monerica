@@ -85,8 +85,7 @@ public class SearchController : Controller
             pageSize = 10;
         }
 
-        var result = await this.entryRepo.SearchAsync(q, page, pageSize);
-
+        var result = await this.entryRepo.SearchNonRemovedAsync(q, page, pageSize);
         var link2Name = await this.cacheService.GetSnippetAsync(SiteConfigSetting.Link2Name);
         var link3Name = await this.cacheService.GetSnippetAsync(SiteConfigSetting.Link3Name);
 

@@ -81,7 +81,7 @@ namespace DirectoryManager.Web.Controllers
             CachePrefixManager.ExpirePrefix(StringConstants.ActiveTagsByCategoryCachePrefix);
             CachePrefixManager.ExpirePrefix(StringConstants.ActiveTagIdsByCategoryCachePrefix);
             CachePrefixManager.ExpirePrefix(StringConstants.CacheKeyPrefixConversion);
-
+            this.cache.Remove(StringConstants.CacheKeyAuthorPostCounts);
             this.cache.Remove(StringConstants.CacheKeyEntries);
             this.cache.Remove(StringConstants.CacheKeySponsoredListings);
             this.cache.Remove(StringConstants.CacheKeyAllActiveSponsors);
