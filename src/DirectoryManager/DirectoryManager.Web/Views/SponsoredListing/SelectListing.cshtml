@@ -44,11 +44,11 @@
     <form method="get">
         <input name="sponsorshipType" type="hidden" value="@ViewBag.SponsorshipType" />
         <input name="rsvId" type="hidden" value="@reservationGuid" />
-        <select id="combinedFilter" name="subCategoryId">
-            <option class="form-control select-fit" value="">--Category &gt; Subcategory--</option>
+        <select class="form-control select-fit"  id="combinedFilter" name="subCategoryId">
+            <option>--Category &gt; Subcategory--</option>
             @foreach (var subCategory in (IEnumerable<Subcategory>)ViewBag.SubCategories)
             {
-                <option class="form-control select-fit" value="@subCategory.SubCategoryId"
+                <option value="@subCategory.SubCategoryId"
                         selected="@(Context.Request.Query["subCategoryId"] == subCategory.SubCategoryId.ToString() ? "selected" : null)">
                     @subCategory.Category.Name &gt; @subCategory.Name
                 </option>
