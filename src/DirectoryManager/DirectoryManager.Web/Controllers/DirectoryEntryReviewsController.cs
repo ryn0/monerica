@@ -18,11 +18,9 @@ namespace DirectoryManager.Web.Controllers
     [Route("directory-entry-reviews")]
     public class DirectoryEntryReviewsController : BaseController
     {
+        private const string OrderProofHttpClientName = "OrderProofVerifier";
         private const string SesssionExpiredMessage = "Session expired, your reply message was not saved, please start over!";
         private static readonly char[] CodeAlphabet = StringConstants.CodeAlphabet.ToCharArray();
-
-        private const string OrderProofHttpClientName = "OrderProofVerifier";
-
         private readonly IMemoryCache cache;
         private readonly ICaptchaService captcha;
         private readonly IPgpService pgp;
@@ -683,25 +681,46 @@ namespace DirectoryManager.Web.Controllers
                 var b = ip.GetAddressBytes();
 
                 // 10.0.0.0/8
-                if (b[0] == 10) return true;
+                if (b[0] == 10)
+                {
+                    return true;
+                }
 
                 // 127.0.0.0/8
-                if (b[0] == 127) return true;
+                if (b[0] == 127)
+                {
+                    return true;
+                }
 
                 // 169.254.0.0/16 (link-local)
-                if (b[0] == 169 && b[1] == 254) return true;
+                if (b[0] == 169 && b[1] == 254)
+                {
+                    return true;
+                }
 
                 // 172.16.0.0/12
-                if (b[0] == 172 && b[1] >= 16 && b[1] <= 31) return true;
+                if (b[0] == 172 && b[1] >= 16 && b[1] <= 31)
+                {
+                    return true;
+                }
 
                 // 192.168.0.0/16
-                if (b[0] == 192 && b[1] == 168) return true;
+                if (b[0] == 192 && b[1] == 168)
+                {
+                    return true;
+                }
 
                 // 0.0.0.0/8
-                if (b[0] == 0) return true;
+                if (b[0] == 0)
+                {
+                    return true;
+                }
 
                 // 100.64.0.0/10 (CGNAT)
-                if (b[0] == 100 && b[1] >= 64 && b[1] <= 127) return true;
+                if (b[0] == 100 && b[1] >= 64 && b[1] <= 127)
+                {
+                    return true;
+                }
 
                 return false;
             }
@@ -731,10 +750,6 @@ namespace DirectoryManager.Web.Controllers
 
             return true;
         }
-
-        // =========================
-        // ✅ Challenge helpers
-        // =========================
 
         private static string GenerateChallengeCodeNormalized(int length)
         {
