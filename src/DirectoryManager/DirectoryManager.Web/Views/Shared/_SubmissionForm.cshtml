@@ -88,7 +88,10 @@
 
 <div class="form-group">
     <label asp-for="Processor">Payment Processor</label>
-    <input autocomplete="off" asp-for="Processor" class="form-control input-width" />
+    <select asp-for="Processor"
+            class="form-control select-fit"
+            asp-items="ViewBag.ProcessorOptions">
+    </select>
     <span asp-validation-for="Processor" class="text-danger"></span>
 </div>
 

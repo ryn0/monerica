@@ -1,11 +1,12 @@
-﻿using System.Reflection;
-using DirectoryManager.Data.Models;
+﻿using DirectoryManager.Data.Models;
 using DirectoryManager.Data.Models.Affiliates;
 using DirectoryManager.Data.Models.BaseModels;
 using DirectoryManager.Data.Models.Emails;
 using DirectoryManager.Data.Models.Reviews;
 using DirectoryManager.Data.Models.SponsoredListings;
 using Microsoft.EntityFrameworkCore;
+using System.Reflection;
+using System.Reflection.Emit;
 
 namespace DirectoryManager.Data.DbContextInfo
 {
@@ -54,6 +55,7 @@ namespace DirectoryManager.Data.DbContextInfo
         public DbSet<ReviewTag> ReviewTags { get; set; }
         public DbSet<DirectoryEntryReviewTag> DirectoryEntryReviewTags { get; set; }
 
+        public DbSet<Processor> Processors { get; set; }
 
         public override int SaveChanges()
         {
@@ -106,6 +108,15 @@ namespace DirectoryManager.Data.DbContextInfo
 
             ConfigureReviewCommentIndexes(builder);
             ConfigureDirectoryEntryTagIndexes(builder);
+
+            ConfigureProcessorIndexes(builder);
+        }
+
+        private static void ConfigureProcessorIndexes(ModelBuilder builder)
+        {
+            builder.Entity<Processor>()
+                .HasIndex(x => x.Name)
+                .IsUnique();
         }
 
         private static void ConfigureSponsoredListingOpeningNotificationIndexes(ModelBuilder builder)

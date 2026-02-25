@@ -46,6 +46,7 @@ namespace DirectoryManager.Data.DbContextInfo
         public DbSet<AdditionalLink> AdditionalLinks { get; set; }
         public DbSet<ReviewTag> ReviewTags { get; set; }
         public DbSet<DirectoryEntryReviewTag> DirectoryEntryReviewTags { get; set; }
+        public DbSet<Processor> Processors { get; set; }
 
         int SaveChanges();
         Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);

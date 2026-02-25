@@ -37,6 +37,7 @@ namespace DirectoryManager.Web.Controllers
         private readonly IDirectoryEntryTagRepository entryTagRepo;
         private readonly IAdditionalLinkRepository additionalLinkRepo;
         private readonly IDomainRegistrationDateService domainRegistrationDateService;
+        private readonly IProcessorRepository processorRepo;
 
         public SubmissionController(
             UserManager<ApplicationUser> userManager,
@@ -52,7 +53,8 @@ namespace DirectoryManager.Web.Controllers
             ITagRepository tagRepo,
             IDirectoryEntryTagRepository entryTagRepo,
             IAdditionalLinkRepository additionalLinkRepo,
-            IDomainRegistrationDateService domainRegistrationDateService)
+            IDomainRegistrationDateService domainRegistrationDateService,
+            IProcessorRepository processorRepo)
             : base(trafficLogRepository, userAgentCacheService, cache)
         {
             this.userManager = userManager;
@@ -67,6 +69,7 @@ namespace DirectoryManager.Web.Controllers
             this.entryTagRepo = entryTagRepo;
             this.additionalLinkRepo = additionalLinkRepo;
             this.domainRegistrationDateService = domainRegistrationDateService;
+            this.processorRepo = processorRepo;
         }
 
         [AllowAnonymous]
@@ -179,7 +182,7 @@ namespace DirectoryManager.Web.Controllers
 
             if (!this.ModelState.IsValid)
             {
-                await this.LoadDropDowns();
+                await this.LoadDropDowns(model.Processor, CancellationToken.None);
                 await this.LoadAllTagsForCheckboxesAsync();
                 return this.View("SubmitEdit", model);
             }
@@ -241,7 +244,7 @@ namespace DirectoryManager.Web.Controllers
             model.RelatedLink3 = urls.ElementAtOrDefault(2);
 
             await this.SetSelectSubCategoryViewBag();
-            await this.LoadDropDowns();
+            await this.LoadDropDowns(model.Processor, ct);
             await this.LoadAllTagsForCheckboxesAsync();
 
             return this.View("SubmitEdit", model);
@@ -418,7 +421,7 @@ namespace DirectoryManager.Web.Controllers
                 }
             }
 
-            await this.LoadDropDowns();
+            await this.LoadDropDowns(submission.Processor, ct);
             await this.SetSelectSubCategoryViewBag();
 
             return this.View(submission);
@@ -657,6 +660,46 @@ namespace DirectoryManager.Web.Controllers
                 error = "Founded date is not a real calendar date.";
                 return false;
             }
+        }
+
+        private static List<int> ParseCsvIds(string? csv)
+        {
+            if (string.IsNullOrWhiteSpace(csv))
+            {
+                return new List<int>();
+            }
+
+            return csv.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(x => x.Trim())
+                .Select(x => int.TryParse(x, out var id) ? id : (int?)null)
+                .Where(x => x.HasValue && x.Value > 0)
+                .Select(x => x!.Value)
+                .Distinct()
+                .ToList();
+        }
+        private static List<string> NormalizeLinks(IEnumerable<string?>? links, int max)
+        {
+            return (links ?? Array.Empty<string?>())
+                .Select(x => (x ?? string.Empty).Trim())
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(max)
+                .ToList();
+        }
+
+        private static HashSet<int> ParseIdsCsv(string? csv)
+        {
+            if (string.IsNullOrWhiteSpace(csv))
+            {
+                return new HashSet<int>();
+            }
+
+            return csv.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(s => s.Trim())
+                .Select(s => int.TryParse(s, out var id) ? id : 0)
+                .Where(id => id > 0)
+                .Distinct()
+                .ToHashSet();
         }
 
         private static SubmissionRequest GetSubmissionRequestModel(Data.Models.DirectoryEntry directoryEntry)
@@ -1005,7 +1048,7 @@ namespace DirectoryManager.Web.Controllers
             int[] selectedTagIds,
             List<string> normalizedRelated)
         {
-            await this.LoadDropDowns();
+            await this.LoadDropDowns(model.Processor, CancellationToken.None);
             await this.SetSelectSubCategoryViewBag();
             await this.LoadAllTagsForCheckboxesAsync();
 
@@ -1134,10 +1177,11 @@ namespace DirectoryManager.Web.Controllers
             }
         }
 
-        private async Task LoadDropDowns()
+        private async Task LoadDropDowns(string? selectedProcessor = null, CancellationToken ct = default)
         {
             await this.LoadSubCategories();
             await this.PopulateCountryDropDownList();
+            await this.LoadProcessorDropDownAsync(selectedProcessor, ct);
         }
 
         private async Task CreateDirectoryEntry(Submission model)
@@ -1301,6 +1345,46 @@ namespace DirectoryManager.Web.Controllers
             await this.submissionRepository.UpdateAsync(existingSubmission);
         }
 
+        private async Task LoadProcessorDropDownAsync(string? selectedProcessorName = null, CancellationToken ct = default)
+        {
+            selectedProcessorName = (selectedProcessorName ?? string.Empty).Trim();
+
+            var options = await this.processorRepo.ListOptionsAsync(ct);
+
+            // Value=Name, Text=Name (because Submission.Processor is a string)
+            var items = options
+                .Select(o => new SelectListItem
+                {
+                    Value = o.Name,
+                    Text = o.Name
+                })
+                .ToList();
+
+            // ✅ Blank option
+            items.Insert(0, new SelectListItem { Value = "", Text = "Select a processor" });
+
+            // ✅ If the current model has a value that isn’t in the table, preserve it on redisplay
+            if (!string.IsNullOrWhiteSpace(selectedProcessorName)
+                && !items.Any(x => string.Equals(x.Value, selectedProcessorName, StringComparison.OrdinalIgnoreCase)))
+            {
+                items.Insert(1, new SelectListItem
+                {
+                    Value = selectedProcessorName,
+                    Text = $"{selectedProcessorName} (custom)",
+                    Selected = true
+                });
+            }
+
+            // Mark selected
+            foreach (var it in items)
+            {
+                it.Selected = !string.IsNullOrWhiteSpace(selectedProcessorName)
+                    && string.Equals(it.Value, selectedProcessorName, StringComparison.OrdinalIgnoreCase);
+            }
+
+            this.ViewBag.ProcessorOptions = items;
+        }
+
         private async Task LoadAllTagsForCheckboxesAsync()
         {
             var tags = await this.tagRepo.ListAllAsync();
@@ -1310,45 +1394,7 @@ namespace DirectoryManager.Web.Controllers
                 .ToList();
         }
 
-        private static List<int> ParseCsvIds(string? csv)
-        {
-            if (string.IsNullOrWhiteSpace(csv))
-            {
-                return new List<int>();
-            }
-
-            return csv.Split(',', StringSplitOptions.RemoveEmptyEntries)
-                .Select(x => x.Trim())
-                .Select(x => int.TryParse(x, out var id) ? id : (int?)null)
-                .Where(x => x.HasValue && x.Value > 0)
-                .Select(x => x!.Value)
-                .Distinct()
-                .ToList();
-        }
-        private static List<string> NormalizeLinks(IEnumerable<string?>? links, int max)
-        {
-            return (links ?? Array.Empty<string?>())
-                .Select(x => (x ?? string.Empty).Trim())
-                .Where(x => !string.IsNullOrWhiteSpace(x))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Take(max)
-                .ToList();
-        }
-
-        private static HashSet<int> ParseIdsCsv(string? csv)
-        {
-            if (string.IsNullOrWhiteSpace(csv))
-            {
-                return new HashSet<int>();
-            }
-
-            return csv.Split(',', StringSplitOptions.RemoveEmptyEntries)
-                .Select(s => s.Trim())
-                .Select(s => int.TryParse(s, out var id) ? id : 0)
-                .Where(id => id > 0)
-                .Distinct()
-                .ToHashSet();
-        }
+      
 
         private async Task<bool> HasChangesAsync(SubmissionRequest model)
         {

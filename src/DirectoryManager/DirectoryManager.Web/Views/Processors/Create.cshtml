@@ -1,0 +1,27 @@
+﻿@model DirectoryManager.Web.Models.Processors.ProcessorEditVm
+
+@{
+    ViewData["Title"] = "Create Processor";
+}
+
+@{
+    Layout = "_CenteredLayout";
+}
+
+@section PageContent {
+<h1>Create Processor</h1>
+
+<form method="post" action="/processors/create">
+    @Html.AntiForgeryToken()
+
+    <div class="mb-3">
+        <label class="form-label">Name</label>
+        <input class="form-control" asp-for="Name" />
+        <span class="text-danger" asp-validation-for="Name"></span>
+    </div>
+
+    <button class="btn btn-primary" type="submit">Create</button>
+    <a class="btn btn-link" href="~/processors">Cancel</a>
+</form>
+
+}
