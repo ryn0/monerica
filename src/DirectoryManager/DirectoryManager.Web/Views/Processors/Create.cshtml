@@ -1,15 +1,17 @@
-﻿@model DirectoryManager.Web.Models.Processors.ProcessorEditVm
+﻿@using DirectoryManager.Web.Constants
+@model DirectoryManager.Web.Models.Processors.ProcessorEditVm
 
 @{
-    ViewData["Title"] = "Create Processor";
-}
-
-@{
+    ViewData[StringConstants.TitleHeader] = "Create Processor";
     Layout = "_CenteredLayout";
 }
 
 @section PageContent {
-<h1>Create Processor</h1>
+ 
+    <h1>@ViewData[StringConstants.TitleHeader]</h1>
+
+    @await Html.PartialAsync("_AdminMenu")
+
 
 <form method="post" action="/processors/create">
     @Html.AntiForgeryToken()

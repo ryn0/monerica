@@ -1,15 +1,16 @@
-﻿@model List<DirectoryManager.Data.Models.Processor>
+﻿@using DirectoryManager.Web.Constants
+@model List<DirectoryManager.Data.Models.Processor>
 
 @{
     ViewData["Title"] = "Processors";
-}
-
-@{
     Layout = "_CenteredLayout";
 }
 
 @section PageContent {
-<h1>Processors</h1>
+
+    <h1>@ViewData[StringConstants.TitleHeader]</h1>
+
+    @await Html.PartialAsync("_AdminMenu")
 
 <p>
     <a class="btn btn-primary" href="~/processors/create">Add Processor</a>
