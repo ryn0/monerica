@@ -313,9 +313,21 @@ namespace DirectoryManager.Web.Controllers
         public async Task<IActionResult> Index(int? page, int pageSize = Constants.IntegerConstants.DefaultPageSize)
         {
             int pageNumber = page ?? 1;
+            if (pageNumber < 1) pageNumber = 1;
+
             var submissions = await this.submissionRepository.GetAllAsync();
-            var count = submissions.Count();
-            var items = submissions.Skip((pageNumber - 1) * pageSize).Take(pageSize).ToList();
+
+            // ✅ Pending first, then newest (UpdateDate ?? CreateDate), then by id
+            var ordered = submissions
+                .OrderBy(s => s.SubmissionStatus == SubmissionStatus.Pending ? 0 : 1)
+                .ThenByDescending(s => s.UpdateDate ?? s.CreateDate)
+                .ThenByDescending(s => s.SubmissionId);
+
+            var count = ordered.Count();
+            var items = ordered
+                .Skip((pageNumber - 1) * pageSize)
+                .Take(pageSize)
+                .ToList();
 
             var viewModel = new SubmissionPagedList
             {
@@ -326,6 +338,37 @@ namespace DirectoryManager.Web.Controllers
             };
 
             return this.View(viewModel);
+        }
+
+        [Authorize]
+        [HttpGet("submission/pending")]
+        public async Task<IActionResult> Pending(int? page, int pageSize = Constants.IntegerConstants.DefaultPageSize)
+        {
+            int pageNumber = page ?? 1;
+            if (pageNumber < 1) pageNumber = 1;
+
+            var submissions = await this.submissionRepository.GetAllAsync();
+
+            var filtered = submissions
+                .Where(s => s.SubmissionStatus == SubmissionStatus.Pending)
+                .OrderByDescending(s => s.UpdateDate ?? s.CreateDate)
+                .ThenByDescending(s => s.SubmissionId);
+
+            var count = filtered.Count();
+            var items = filtered
+                .Skip((pageNumber - 1) * pageSize)
+                .Take(pageSize)
+                .ToList();
+
+            var viewModel = new SubmissionPagedList
+            {
+                PageNumber = pageNumber,
+                PageSize = pageSize,
+                TotalCount = count,
+                Items = items
+            };
+
+            return this.View("Pending", viewModel);
         }
 
         [Authorize]
