@@ -1,7 +1,4 @@
-﻿using System.Net;
-using System.Security.Cryptography;
-using System.Text;
-using DirectoryManager.Data.Enums;
+﻿using DirectoryManager.Data.Enums;
 using DirectoryManager.Data.Models;
 using DirectoryManager.Data.Models.Reviews;
 using DirectoryManager.Data.Repositories.Interfaces;
@@ -12,12 +9,16 @@ using DirectoryManager.Web.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using System.Net;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace DirectoryManager.Web.Controllers
 {
     [Route("directory-entry-reviews")]
     public class DirectoryEntryReviewsController : BaseController
     {
+        private const string VerifiedOrderTagSlug = "verified-order";
         private const string OrderProofHttpClientName = "OrderProofVerifier";
         private const string SesssionExpiredMessage = "Session expired, your reply message was not saved, please start over!";
         private static readonly char[] CodeAlphabet = StringConstants.CodeAlphabet.ToCharArray();
@@ -28,6 +29,7 @@ namespace DirectoryManager.Web.Controllers
         private readonly IDirectoryEntryRepository directoryEntryRepository;
         private readonly IUserContentModerationService moderation;
         private readonly IHttpClientFactory httpClientFactory;
+        private readonly IReviewTagRepository reviewTagRepository;
 
         public DirectoryEntryReviewsController(
             IDirectoryEntryReviewRepository repo,
@@ -38,7 +40,8 @@ namespace DirectoryManager.Web.Controllers
             IPgpService pgp,
             IDirectoryEntryRepository directoryEntryRepository,
             IUserContentModerationService moderation,
-            IHttpClientFactory httpClientFactory)
+            IHttpClientFactory httpClientFactory,
+            IReviewTagRepository reviewTagRepository)
             : base(trafficLogRepository, userAgentCacheService, cache)
         {
             this.directoryEntryReviewRepository = repo;
@@ -48,6 +51,7 @@ namespace DirectoryManager.Web.Controllers
             this.directoryEntryRepository = directoryEntryRepository;
             this.moderation = moderation;
             this.httpClientFactory = httpClientFactory;
+            this.reviewTagRepository = reviewTagRepository;
         }
 
         [HttpGet("begin")]
@@ -309,7 +313,6 @@ namespace DirectoryManager.Web.Controllers
                 !string.IsNullOrWhiteSpace(entity.OrderId) ||
                 !string.IsNullOrWhiteSpace(entity.OrderUrl);
 
-            // ✅ NEW: If OrderUrl is same-domain + returns HTTP 200, auto-approve (unless mod needs manual review)
             var proofAutoApproved = false;
 
             if (!mod.NeedsManualReview && !string.IsNullOrWhiteSpace(entity.OrderUrl))
@@ -329,6 +332,23 @@ namespace DirectoryManager.Web.Controllers
                     : ReviewModerationStatus.Approved);
 
             await this.directoryEntryReviewRepository.AddAsync(entity, ct);
+
+            // ✅ If auto-approved via order verification AND it has an OrderId, add the "verified-order" tag
+            if (proofAutoApproved &&
+                entity.ModerationStatus == ReviewModerationStatus.Approved &&
+                !string.IsNullOrWhiteSpace(entity.OrderUrl))
+            {
+                var tag = await this.reviewTagRepository.GetBySlugAsync(VerifiedOrderTagSlug, ct);
+
+                // Only tag if the tag exists (and optionally enabled)
+                if (tag is not null && tag.IsEnabled)
+                {
+                    await this.directoryEntryReviewRepository.EnsureTagAsync(
+                        entity.DirectoryEntryReviewId,
+                        tag.ReviewTagId,
+                        ct);
+                }
+            }
 
             // ✅ Your Thanks.cshtml reads TempData["ReviewMessage"]
             this.TempData["ReviewMessage"] = mod.ThankYouMessage;

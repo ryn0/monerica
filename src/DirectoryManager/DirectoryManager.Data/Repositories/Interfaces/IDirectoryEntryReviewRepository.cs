@@ -51,5 +51,6 @@ namespace DirectoryManager.Data.Repositories.Interfaces
         Task<bool> DeleteOwnedAsync(int reviewId, string fingerprint, CancellationToken ct = default);
 
         Task<Dictionary<string, int>> GetApprovedReviewCountsByAuthorAsync(CancellationToken ct = default);
+        Task EnsureTagAsync(int directoryEntryReviewId, int reviewTagId, CancellationToken ct);
     }
 }

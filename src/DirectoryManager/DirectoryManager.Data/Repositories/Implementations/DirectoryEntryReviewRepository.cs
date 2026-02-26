@@ -210,6 +210,30 @@ namespace DirectoryManager.Data.Repositories.Implementations
             return true;
         }
 
+        public async Task EnsureTagAsync(int directoryEntryReviewId, int reviewTagId, CancellationToken ct = default)
+        {
+            // ✅ Adjust DbSet name if yours differs
+            var joins = this.context.DirectoryEntryReviewTags;
+
+            var exists = await joins.AsNoTracking().AnyAsync(
+                x => x.DirectoryEntryReviewId == directoryEntryReviewId &&
+                     x.ReviewTagId == reviewTagId,
+                ct);
+
+            if (exists)
+            {
+                return;
+            }
+
+            joins.Add(new DirectoryEntryReviewTag
+            {
+                DirectoryEntryReviewId = directoryEntryReviewId,
+                ReviewTagId = reviewTagId
+            });
+
+            await this.context.SaveChangesAsync(ct);
+        }
+
         public async Task<Dictionary<string, int>> GetApprovedReviewCountsByAuthorAsync(CancellationToken ct = default)
         {
             var rows = await this.Set.AsNoTracking()
