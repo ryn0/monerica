@@ -270,6 +270,46 @@ namespace DirectoryManager.Data.Repositories.Implementations
             await this.context.SaveChangesAsync().ConfigureAwait(false);
         }
 
+        private DbSet<SponsoredListingOpeningNotification> Set => this.context.SponsoredListingOpeningNotifications;
+
+        public async Task<List<WaitlistScopedItemDto>> GetWaitlistAllByTypeAsync(SponsorshipType type)
+        {
+            // ✅ SAME RULES AS BaseWaitlistQuery for the "unsent waitlist"
+            var q = this.Set
+                .AsNoTracking()
+                .Where(n =>
+                    n.IsActive &&
+                    !n.IsReminderSent &&
+                    n.SponsorshipType == type);
+
+            if (type == SponsorshipType.MainSponsor)
+            {
+                // accept legacy 0
+                q = q.Where(n => n.TypeId == null || n.TypeId == 0);
+            }
+            else
+            {
+                // only valid scoped rows
+                q = q.Where(n => n.TypeId.HasValue && n.TypeId.Value > 0);
+            }
+
+            // ✅ sort by JOINED (SubscribedDate), not CreateDate
+            return await q
+                .OrderByDescending(n => n.SubscribedDate)
+                .ThenByDescending(n => n.SponsoredListingOpeningNotificationId)
+                .Select(n => new WaitlistScopedItemDto
+                {
+                    SponsoredListingOpeningNotificationId = n.SponsoredListingOpeningNotificationId,
+                    SponsorshipType = n.SponsorshipType,
+                    TypeId = n.TypeId,
+                    DirectoryEntryId = n.DirectoryEntryId,
+
+                    SubscribedDateUtc = n.SubscribedDate
+                })
+                .ToListAsync()
+                .ConfigureAwait(false);
+        }
+
         private static string NormalizeEmail(string email) => (email ?? string.Empty).Trim().ToLowerInvariant();
 
         // MainSponsor: store TypeId = null (but we will also match legacy TypeId == 0)

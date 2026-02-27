@@ -165,13 +165,23 @@ namespace DirectoryManager.Web.Controllers
             return this.View("Options", vm);
         }
 
-        // GET /sponsorship/waitlist?type=MainSponsor&typeId=...&page=1
+        // GET /sponsorship/waitlist
         [HttpGet("waitlist")]
         public async Task<IActionResult> Waitlist(
             [FromQuery] SponsorshipType type = SponsorshipType.MainSponsor,
             [FromQuery] int? typeId = null,
             [FromQuery] int page = 1)
         {
+            // ✅ NO query string at all => show ALL waitlists on one page
+            if (this.Request.Query == null || this.Request.Query.Count == 0)
+            {
+                var overview = await this.BuildWaitlistsOverviewAsync();
+                return this.View("Waitlists", overview);
+            }
+
+            // =========================
+            // Existing single-scope page (paged)
+            // =========================
             page = Math.Max(1, page);
 
             // Validate: MainSponsor uses null typeId
@@ -545,7 +555,120 @@ namespace DirectoryManager.Web.Controllers
                 JoinWouldBeRank = count + 1
             };
         }
+        private async Task<SponsorshipWaitlistsOverviewVm> BuildWaitlistsOverviewAsync()
+        {
+            // 3 queries total (one per sponsorship type)
+            var mainRows = await this.waitlistRepo.GetWaitlistAllByTypeAsync(SponsorshipType.MainSponsor);
+            var catRows = await this.waitlistRepo.GetWaitlistAllByTypeAsync(SponsorshipType.CategorySponsor);
+            var subRows = await this.waitlistRepo.GetWaitlistAllByTypeAsync(SponsorshipType.SubcategorySponsor);
 
+            // One DirectoryEntry lookup for EVERYTHING (fast)
+            var allIds = mainRows
+                .Concat(catRows)
+                .Concat(subRows)
+                .Select(x => x.DirectoryEntryId)
+                .Where(x => x.HasValue && x.Value > 0)
+                .Select(x => x!.Value)
+                .Distinct()
+                .ToList();
+
+            var entryLookup = await this.entryRepo.GetByIdsAsync(allIds);
+
+            List<WaitlistPublicItemVm> MapItems(IEnumerable<WaitlistScopedItemDto> rows)
+            {
+                return rows.Select(dto =>
+                {
+                    DirectoryEntry? entry = null;
+
+                    if (dto.DirectoryEntryId.HasValue &&
+                        dto.DirectoryEntryId.Value > 0 &&
+                        entryLookup.TryGetValue(dto.DirectoryEntryId.Value, out var e))
+                    {
+                        entry = e;
+                    }
+
+                    return new WaitlistPublicItemVm
+                    {
+                        ListingName = GetListingName(entry, dto.DirectoryEntryId),
+                        ListingUrl = entry?.Link ?? string.Empty,
+
+                        // ✅ joined = SubscribedDateUtc
+                        JoinedUtc = dto.SubscribedDateUtc
+                    };
+                })
+                    // ✅ sort by when they joined (SubscribedDate), not CreateDate, not listing name
+                    .OrderByDescending(x => x.JoinedUtc)
+                    .ThenBy(x => x.ListingName, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
+
+            // MAIN section (single scope)
+            var mainSection = new SponsorshipWaitlistSectionVm
+            {
+                SponsorshipType = SponsorshipType.MainSponsor,
+                TypeId = null,
+                ScopeLabel = await this.GetScopeLabelAsync(SponsorshipType.MainSponsor, null),
+                TotalCount = mainRows.Count,
+                BrowseUrl = this.Url.Action("Waitlist", "Sponsorship", new { type = SponsorshipType.MainSponsor }) ?? "",
+                Items = MapItems(mainRows)
+            };
+
+            // CATEGORY sections (one per category scope that has rows)
+            var categorySections = new List<SponsorshipWaitlistSectionVm>();
+            foreach (var g in catRows
+                .Where(x => x.TypeId.HasValue && x.TypeId.Value > 0)
+                .GroupBy(x => x.TypeId!.Value))
+            {
+                var catId = g.Key;
+                var label = await this.GetScopeLabelAsync(SponsorshipType.CategorySponsor, catId);
+
+                categorySections.Add(new SponsorshipWaitlistSectionVm
+                {
+                    SponsorshipType = SponsorshipType.CategorySponsor,
+                    TypeId = catId,
+                    ScopeLabel = label,
+                    TotalCount = g.Count(),
+                    BrowseUrl = this.Url.Action("Waitlist", "Sponsorship", new { type = SponsorshipType.CategorySponsor, typeId = catId }) ?? "",
+                    Items = MapItems(g)
+                });
+            }
+
+            categorySections = categorySections
+                .OrderBy(x => x.ScopeLabel, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            // SUBCATEGORY sections (one per subcategory scope that has rows)
+            var subcategorySections = new List<SponsorshipWaitlistSectionVm>();
+            foreach (var g in subRows
+                .Where(x => x.TypeId.HasValue && x.TypeId.Value > 0)
+                .GroupBy(x => x.TypeId!.Value))
+            {
+                var subId = g.Key;
+                var label = await this.GetScopeLabelAsync(SponsorshipType.SubcategorySponsor, subId);
+
+                subcategorySections.Add(new SponsorshipWaitlistSectionVm
+                {
+                    SponsorshipType = SponsorshipType.SubcategorySponsor,
+                    TypeId = subId,
+                    ScopeLabel = label,
+                    TotalCount = g.Count(),
+                    BrowseUrl = this.Url.Action("Waitlist", "Sponsorship", new { type = SponsorshipType.SubcategorySponsor, typeId = subId }) ?? "",
+                    Items = MapItems(g)
+                });
+            }
+
+            subcategorySections = subcategorySections
+                .OrderBy(x => x.ScopeLabel, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            return new SponsorshipWaitlistsOverviewVm
+            {
+                TotalCount = mainSection.TotalCount + categorySections.Sum(x => x.TotalCount) + subcategorySections.Sum(x => x.TotalCount),
+                Main = mainSection,
+                Categories = categorySections,
+                Subcategories = subcategorySections
+            };
+        }
         private async Task<string> GetScopeLabelAsync(SponsorshipType type, int? typeId)
         {
             if (type == SponsorshipType.MainSponsor)
@@ -669,7 +792,7 @@ namespace DirectoryManager.Web.Controllers
             {
                 MainWaitlistCount = mainCount,
                 MainPreview = previewRows,
-                BrowseWaitlistUrl = this.Url.Action("Waitlist", "Sponsorship", new { type = SponsorshipType.MainSponsor })
+                BrowseWaitlistUrl = this.Url.Action("Waitlist", "Sponsorship")
             };
         }
     }

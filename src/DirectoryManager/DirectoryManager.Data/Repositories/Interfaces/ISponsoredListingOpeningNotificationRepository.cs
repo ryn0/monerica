@@ -40,5 +40,7 @@ namespace DirectoryManager.Data.Repositories.Interfaces
             string email,
             int directoryEntryId,
             IEnumerable<(SponsorshipType Type, int? TypeId)> scopes);
+
+        Task<List<WaitlistScopedItemDto>> GetWaitlistAllByTypeAsync(SponsorshipType type);
     }
 }
