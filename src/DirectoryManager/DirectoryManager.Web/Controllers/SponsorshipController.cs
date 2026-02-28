@@ -7,6 +7,7 @@ using DirectoryManager.DisplayFormatting.Helpers;
 using DirectoryManager.Utilities.Helpers;
 using DirectoryManager.Web.Constants;
 using DirectoryManager.Web.Helpers;
+using DirectoryManager.Web.Models; // ✅ ListingInventoryModel
 using DirectoryManager.Web.Models.Sponsorship;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -93,6 +94,47 @@ namespace DirectoryManager.Web.Controllers
 
             // Recent paid
             vm.RecentPaid = await this.BuildRecentPaidAsync();
+
+            // =====================================
+            // ✅ Main Sponsor open + next opening info
+            // =====================================
+            var maxMain = DirectoryManager.Common.Constants.IntegerConstants.MaxMainSponsoredListings;
+            var activeMain = await this.sponsoredListingRepo.GetActiveSponsorsCountAsync(
+                SponsorshipType.MainSponsor,
+                typeId: null);
+
+            vm.MainSponsorMaxSlots = maxMain;
+            vm.MainSponsorActiveCount = activeMain;
+            vm.MainSponsorIsOpen = activeMain < maxMain;
+
+            if (!vm.MainSponsorIsOpen)
+            {
+                var now = DateTime.UtcNow;
+
+                var allActiveMain = await this.sponsoredListingRepo.GetActiveSponsorsByTypeAsync(SponsorshipType.MainSponsor);
+
+                var nextUtc = allActiveMain
+                    .Where(x => x.CampaignEndDate > now)
+                    .OrderBy(x => x.CampaignEndDate)
+                    .Select(x => (DateTime?)x.CampaignEndDate)
+                    .FirstOrDefault();
+
+                if (nextUtc.HasValue)
+                {
+                    vm.MainSponsorInventory = new ListingInventoryModel
+                    {
+                        NextListingExpiration = nextUtc.Value 
+                    };
+                }
+                else
+                {
+                    // Fallback (rare) – show something sane
+                    vm.MainSponsorInventory = new ListingInventoryModel
+                    {
+                        NextListingExpiration = now
+                    };
+                }
+            }
 
             return this.View("Index", vm);
         }
@@ -280,6 +322,7 @@ namespace DirectoryManager.Web.Controllers
 
             return "Anonymous listing";
         }
+
         private static (bool canAdvertise, List<string> reasons) GetAdvertiseEligibility(DirectoryEntry e)
         {
             var reasons = new List<string>();
@@ -306,40 +349,14 @@ namespace DirectoryManager.Web.Controllers
                 else
                 {
                     var days = (int)Math.Floor((DateTime.UtcNow - e.CreateDate).TotalDays);
-                    if (days < IntegerConstants.UnverifiedMinimumDaysListedBeforeAdvertising)
+                    if (days < DirectoryManager.Web.Constants.IntegerConstants.UnverifiedMinimumDaysListedBeforeAdvertising)
                     {
-                        reasons.Add($"Listing is too new: {days} days listed. Needs {IntegerConstants.UnverifiedMinimumDaysListedBeforeAdvertising} days (unless Verified).");
+                        reasons.Add($"Listing is too new: {days} days listed. Needs {DirectoryManager.Web.Constants.IntegerConstants.UnverifiedMinimumDaysListedBeforeAdvertising} days (unless Verified).");
                     }
                 }
             }
 
             return (reasons.Count == 0, reasons);
-        }
-
-        private async Task<RecentPaidVm> BuildRecentPaidAsync()
-        {
-            var rows = await this.invoiceRepo.GetRecentPaidActivePurchasesAsync(RecentPaidTake);
-
-            return new RecentPaidVm
-            {
-                Items = rows.Select(r => new RecentPaidItemVm
-                {
-                    PaidUtc = r.PaidDateUtc,
-                    SponsorshipType = EnumHelper.GetDescription(r.SponsorshipType),
-
-                    Days = r.Days,
-                    AmountUsd = r.AmountUsd,
-                    PricePerDayUsd = r.PricePerDayUsd,
-
-                    PaidCurrency = r.PaidCurrency.ToString(),
-                    PaidAmount = r.PaidAmount,
-
-                    ExpiresUtc = r.ExpiresUtc,
-
-                    ListingName = r.ListingName,
-                    ListingUrl = r.ListingUrl
-                }).ToList()
-            };
         }
 
         private SponsorshipSearchItemVm ToSearchItem(DirectoryEntry e)
@@ -413,9 +430,9 @@ namespace DirectoryManager.Web.Controllers
 
             var maxSlots = type switch
             {
-                SponsorshipType.MainSponsor => Common.Constants.IntegerConstants.MaxMainSponsoredListings,
-                SponsorshipType.CategorySponsor => Common.Constants.IntegerConstants.MaxCategorySponsoredListings,
-                SponsorshipType.SubcategorySponsor => Common.Constants.IntegerConstants.MaxSubcategorySponsoredListings,
+                SponsorshipType.MainSponsor => DirectoryManager.Common.Constants.IntegerConstants.MaxMainSponsoredListings,
+                SponsorshipType.CategorySponsor => DirectoryManager.Common.Constants.IntegerConstants.MaxCategorySponsoredListings,
+                SponsorshipType.SubcategorySponsor => DirectoryManager.Common.Constants.IntegerConstants.MaxSubcategorySponsoredListings,
                 _ => 0
             };
 
@@ -434,7 +451,7 @@ namespace DirectoryManager.Web.Controllers
                     (x.SubCategoryId.HasValue && x.SubCategoryId.Value == entry.SubCategoryId) ||
                     (x.SubCategoryId == null && x.DirectoryEntry != null && x.DirectoryEntry.SubCategoryId == entry.SubCategoryId));
 
-                if (activeInSameSub >= Common.Constants.IntegerConstants.MaxMainSponsorsPerSubcategory)
+                if (activeInSameSub >= DirectoryManager.Common.Constants.IntegerConstants.MaxMainSponsorsPerSubcategory)
                 {
                     blockedByMainSubCap = true;
 
@@ -555,6 +572,7 @@ namespace DirectoryManager.Web.Controllers
                 JoinWouldBeRank = count + 1
             };
         }
+
         private async Task<SponsorshipWaitlistsOverviewVm> BuildWaitlistsOverviewAsync()
         {
             // 3 queries total (one per sponsorship type)
@@ -596,10 +614,9 @@ namespace DirectoryManager.Web.Controllers
                         JoinedUtc = dto.SubscribedDateUtc
                     };
                 })
-                    // ✅ sort by when they joined (SubscribedDate), not CreateDate, not listing name
-                    .OrderByDescending(x => x.JoinedUtc)
-                    .ThenBy(x => x.ListingName, StringComparer.OrdinalIgnoreCase)
-                    .ToList();
+                .OrderByDescending(x => x.JoinedUtc)
+                .ThenBy(x => x.ListingName, StringComparer.OrdinalIgnoreCase)
+                .ToList();
             }
 
             // MAIN section (single scope)
@@ -613,7 +630,7 @@ namespace DirectoryManager.Web.Controllers
                 Items = MapItems(mainRows)
             };
 
-            // CATEGORY sections (one per category scope that has rows)
+            // CATEGORY sections
             var categorySections = new List<SponsorshipWaitlistSectionVm>();
             foreach (var g in catRows
                 .Where(x => x.TypeId.HasValue && x.TypeId.Value > 0)
@@ -637,7 +654,7 @@ namespace DirectoryManager.Web.Controllers
                 .OrderBy(x => x.ScopeLabel, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-            // SUBCATEGORY sections (one per subcategory scope that has rows)
+            // SUBCATEGORY sections
             var subcategorySections = new List<SponsorshipWaitlistSectionVm>();
             foreach (var g in subRows
                 .Where(x => x.TypeId.HasValue && x.TypeId.Value > 0)
@@ -669,6 +686,94 @@ namespace DirectoryManager.Web.Controllers
                 Subcategories = subcategorySections
             };
         }
+
+        private async Task<RecentPaidVm> BuildRecentPaidAsync()
+        {
+            var rows = await this.invoiceRepo.GetRecentPaidActivePurchasesAsync(RecentPaidTake);
+
+            // ✅ one lookup for all entries so we can build category/subcategory links
+            var ids = rows
+                .Select(x => x.DirectoryEntryId)
+                .Where(x => x > 0)
+                .Distinct()
+                .ToList();
+
+            var entryLookup = await this.entryRepo.GetByIdsAsync(ids);
+
+            DirectoryEntry? TryGet(int id)
+                => (id > 0 && entryLookup.TryGetValue(id, out var e)) ? e : null;
+
+            return new RecentPaidVm
+            {
+                Items = rows.Select(r =>
+                {
+                    var entry = TryGet(r.DirectoryEntryId);
+
+                    return new RecentPaidItemVm
+                    {
+                        PaidUtc = r.PaidDateUtc,
+
+                        SponsorshipTypeEnum = r.SponsorshipType,
+                        SponsorshipType = EnumHelper.GetDescription(r.SponsorshipType),
+
+                        DirectoryEntryId = r.DirectoryEntryId,
+                        PlacementUrl = BuildPlacementUrl(r.SponsorshipType, entry),
+
+                        Days = r.Days,
+                        AmountUsd = r.AmountUsd,
+                        PricePerDayUsd = r.PricePerDayUsd,
+
+                        PaidCurrency = r.PaidCurrency.ToString(),
+                        PaidAmount = r.PaidAmount,
+
+                        ExpiresUtc = r.ExpiresUtc,
+
+                        ListingName = r.ListingName,
+                        ListingUrl = r.ListingUrl
+                    };
+                }).ToList()
+            };
+        }
+
+        // ✅ Add this helper anywhere inside the controller class
+        private static string BuildPlacementUrl(SponsorshipType type, DirectoryEntry? entry)
+        {
+            // Main Sponsor => home
+            if (type == SponsorshipType.MainSponsor)
+            {
+                return "/";
+            }
+
+            // Category/Subcategory => resolve from the entry
+            // Adjust these key property names ONLY if yours differ:
+            var catKey = entry?.SubCategory?.Category?.CategoryKey;     // e.g. "exchanges"
+            var subKey = entry?.SubCategory?.SubCategoryKey;           // e.g. "instant-swaps"
+
+            if (type == SponsorshipType.CategorySponsor)
+            {
+                return !string.IsNullOrWhiteSpace(catKey) ? $"/{catKey}" : "/";
+            }
+
+            if (type == SponsorshipType.SubcategorySponsor)
+            {
+                // common pattern: /{categoryKey}/{subCategoryKey}
+                if (!string.IsNullOrWhiteSpace(catKey) && !string.IsNullOrWhiteSpace(subKey))
+                {
+                    return $"/{catKey}/{subKey}";
+                }
+
+                // fallback if your site uses /{subKey}
+                if (!string.IsNullOrWhiteSpace(subKey))
+                {
+                    return $"/{subKey}";
+                }
+
+                return "/";
+            }
+
+            return "/";
+        }
+
         private async Task<string> GetScopeLabelAsync(SponsorshipType type, int? typeId)
         {
             if (type == SponsorshipType.MainSponsor)
@@ -782,7 +887,6 @@ namespace DirectoryManager.Web.Controllers
         {
             var mainCount = await this.waitlistRepo.GetWaitlistCountAsync(SponsorshipType.MainSponsor, null);
 
-            // IMPORTANT: for newest-first preview, you want the repo to order DESC or sort here.
             var mainPreview = await this.waitlistRepo.GetWaitlistPreviewAsync(
                 SponsorshipType.MainSponsor, null, WaitlistPreviewTake);
 

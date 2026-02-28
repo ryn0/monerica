@@ -723,7 +723,7 @@ namespace DirectoryManager.Data.Repositories.Implementations
                 return new Dictionary<int, DirectoryEntry>();
             }
 
-            // Only fetch what you need (Name/Link/Id) for waitlist display
+            // ✅ Fetch what you need for linking: entry + subcategory + category
             var rows = await this.context.DirectoryEntries
                 .AsNoTracking()
                 .Where(d => list.Contains(d.DirectoryEntryId))
@@ -732,7 +732,25 @@ namespace DirectoryManager.Data.Repositories.Implementations
                     DirectoryEntryKey = d.DirectoryEntryKey,
                     DirectoryEntryId = d.DirectoryEntryId,
                     Name = d.Name,
-                    Link = d.Link
+                    Link = d.Link,
+
+                    // ✅ needed for building sponsorship placement URLs
+                    SubCategoryId = d.SubCategoryId,
+
+                    SubCategory = d.SubCategory == null ? null : new Subcategory
+                    {
+                        SubCategoryId = d.SubCategory.SubCategoryId,
+                        CategoryId = d.SubCategory.CategoryId,
+                        Name = d.SubCategory.Name,
+                        SubCategoryKey = d.SubCategory.SubCategoryKey,
+
+                        Category = d.SubCategory.Category == null ? null : new Category
+                        {
+                            CategoryId = d.SubCategory.Category.CategoryId,
+                            Name = d.SubCategory.Category.Name,
+                            CategoryKey = d.SubCategory.Category.CategoryKey
+                        }
+                    }
                 })
                 .ToListAsync()
                 .ConfigureAwait(false);
