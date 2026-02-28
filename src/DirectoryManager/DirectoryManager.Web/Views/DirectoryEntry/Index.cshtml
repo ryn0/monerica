@@ -19,7 +19,7 @@
 
 <form method="get">
     <label for="combinedFilter">Category > Subcategory: </label>
-        <select class="ui-select" id="combinedFilter" name="subCategoryId">
+        <select class="form-control ui-select" id="combinedFilter" name="subCategoryId">
         <option value="">--Select a Category > SubCategory--</option>
         @foreach (var subCategory in (IEnumerable<SubcategoryDto>)ViewBag.SubCategories)
         {
