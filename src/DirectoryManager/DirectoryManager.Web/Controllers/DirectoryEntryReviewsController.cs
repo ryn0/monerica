@@ -9,6 +9,7 @@ using DirectoryManager.Web.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using System.Collections.Concurrent;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
@@ -22,6 +23,11 @@ namespace DirectoryManager.Web.Controllers
         private const string OrderProofHttpClientName = "OrderProofVerifier";
         private const string SesssionExpiredMessage = "Session expired, your reply message was not saved, please start over!";
         private static readonly char[] CodeAlphabet = StringConstants.CodeAlphabet.ToCharArray();
+
+        // Prevents double-POST without cookies or JS.
+        // ConcurrentDictionary.TryAdd is atomic; only the first caller for a flowId wins.
+        private static readonly ConcurrentDictionary<Guid, bool> SubmittedFlows = new ();
+
         private readonly IMemoryCache cache;
         private readonly ICaptchaService captcha;
         private readonly IPgpService pgp;
@@ -55,10 +61,10 @@ namespace DirectoryManager.Web.Controllers
         }
 
         [HttpGet("begin")]
-        public IActionResult BeginGet() => this.NotFound(); // don’t expose a crawlable GET
+        public IActionResult BeginGet() => this.NotFound(); // don't expose a crawlable GET
 
         [HttpPost("begin")]
-        [IgnoreAntiforgeryToken] // static page can’t emit a token
+        [IgnoreAntiforgeryToken] // static page can't emit a token
         public IActionResult Begin([FromForm] int directoryEntryId, [FromForm] string? website)
         {
             if (!string.IsNullOrWhiteSpace(website))
@@ -214,7 +220,7 @@ namespace DirectoryManager.Web.Controllers
             {
                 this.ModelState.AddModelError(
                     string.Empty,
-                    "That code doesn’t match. Decrypt the message again and enter the code exactly as shown (dashes/spaces don’t matter).");
+                    "That code doesn't match. Decrypt the message again and enter the code exactly as shown (dashes/spaces don't matter).");
 
                 this.ViewBag.FlowId = flowId;
                 this.ViewBag.Ciphertext = state.ChallengeCiphertext;
@@ -259,13 +265,22 @@ namespace DirectoryManager.Web.Controllers
         [ValidateAntiForgeryToken]
         public async Task<IActionResult> ComposePost(Guid flowId, CreateDirectoryEntryReviewInputModel input, CancellationToken ct)
         {
+            // ✅ Atomic double-submit guard: only the first POST for this flowId proceeds.
+            // A second simultaneous click is silently redirected to Thanks.
+            if (!SubmittedFlows.TryAdd(flowId, true))
+            {
+                return this.RedirectToAction(nameof(this.Thanks));
+            }
+
             if (!this.TryGetFlow(flowId, out var flow))
             {
+                SubmittedFlows.TryRemove(flowId, out _);
                 return this.BadRequest(SesssionExpiredMessage);
             }
 
             if (!flow.ChallengeSolved)
             {
+                SubmittedFlows.TryRemove(flowId, out _);
                 return this.RedirectToAction(nameof(this.VerifyCode), new { flowId });
             }
 
@@ -274,6 +289,8 @@ namespace DirectoryManager.Web.Controllers
 
             if (!this.ModelState.IsValid)
             {
+                // ✅ Release the claim so the user can fix their input and resubmit
+                SubmittedFlows.TryRemove(flowId, out _);
                 var entry = await this.directoryEntryRepository.GetByIdAsync(flow.DirectoryEntryId);
                 this.ViewBag.DirectoryEntryName = entry?.Name ?? "Listing";
                 this.ViewBag.FlowId = flowId;
@@ -286,6 +303,8 @@ namespace DirectoryManager.Web.Controllers
 
             if (!mod.IsValid)
             {
+                // ✅ Release the claim so the user can fix their input and resubmit
+                SubmittedFlows.TryRemove(flowId, out _);
                 this.ModelState.AddModelError(nameof(input.Body), mod.ValidationErrorMessage ?? "Invalid content.");
 
                 var entry = await this.directoryEntryRepository.GetByIdAsync(flow.DirectoryEntryId);
@@ -355,6 +374,8 @@ namespace DirectoryManager.Web.Controllers
 
             this.ClearCachedItems();
             this.cache.Remove(CacheKey(flowId));
+            // ✅ flowId tombstone stays in SubmittedFlows — that's intentional.
+            // It's a Guid (16 bytes) and prevents any replay of this flowId.
 
             return this.RedirectToAction(nameof(this.Thanks));
         }

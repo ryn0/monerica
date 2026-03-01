@@ -1,4 +1,5 @@
-﻿using System.Security.Cryptography;
+﻿using System.Collections.Concurrent;
+using System.Security.Cryptography;
 using System.Text;
 using DirectoryManager.Data.Enums;
 using DirectoryManager.Data.Models.Reviews;
@@ -18,6 +19,10 @@ namespace DirectoryManager.Web.Controllers
             "Session expired, your review message was not saved, please start over!";
 
         private static readonly char[] CodeAlphabet = StringConstants.CodeAlphabet.ToCharArray();
+
+        // Prevents double-POST without cookies or JS.
+        // ConcurrentDictionary.TryAdd is atomic; only the first caller for a flowId wins.
+        private static readonly ConcurrentDictionary<Guid, bool> SubmittedFlows = new ();
 
         private readonly IMemoryCache cache;
         private readonly ICaptchaService captcha;
@@ -175,9 +180,6 @@ namespace DirectoryManager.Web.Controllers
             state.PgpArmored = pgpArmored;
             state.PgpFingerprint = fp;
 
-            // NOTE: ReviewReplyFlowState must have:
-            //   public string? ChallengeCode { get; set; }
-            //   public int VerifyAttempts { get; set; }
             state.ChallengeCode = expectedNormalized;
             state.ChallengeCiphertext = cipher;
             state.VerifyAttempts = 0;
@@ -204,9 +206,6 @@ namespace DirectoryManager.Web.Controllers
             this.ViewBag.Ciphertext = state.ChallengeCiphertext;
             this.ViewBag.DirectoryEntryReviewId = state.DirectoryEntryReviewId;
 
-            // This uses your wrapper view at:
-            // /Views/DirectoryEntryReviewReplies/VerifyCode.cshtml
-            // which should render the shared partial and set PostController/PostAction.
             return this.View();
         }
 
@@ -238,7 +237,7 @@ namespace DirectoryManager.Web.Controllers
             {
                 this.ModelState.AddModelError(
                     string.Empty,
-                    "That code doesn’t match. Decrypt the message again and enter the code exactly as shown (dashes/spaces don’t matter).");
+                    "That code doesn't match. Decrypt the message again and enter the code exactly as shown (dashes/spaces don't matter).");
 
                 this.ViewBag.FlowId = flowId;
                 this.ViewBag.Ciphertext = state.ChallengeCiphertext;
@@ -286,13 +285,22 @@ namespace DirectoryManager.Web.Controllers
         [ValidateAntiForgeryToken]
         public async Task<IActionResult> ComposePost(Guid flowId, CreateDirectoryEntryReviewReplyInputModel input, CancellationToken ct)
         {
+            // ✅ Atomic double-submit guard: only the first POST for this flowId proceeds.
+            // A second simultaneous click is silently redirected to Thanks.
+            if (!SubmittedFlows.TryAdd(flowId, true))
+            {
+                return this.RedirectToAction(nameof(this.Thanks));
+            }
+
             if (!this.TryGetFlow(flowId, out var state))
             {
+                SubmittedFlows.TryRemove(flowId, out _);
                 return this.BadRequest(SesssionExpiredMessage);
             }
 
             if (!state.ChallengeSolved)
             {
+                SubmittedFlows.TryRemove(flowId, out _);
                 return this.RedirectToAction(nameof(this.VerifyCode), new { flowId });
             }
 
@@ -304,6 +312,8 @@ namespace DirectoryManager.Web.Controllers
 
             if (!mod.IsValid)
             {
+                // ✅ Release the claim so the user can fix their input and resubmit
+                SubmittedFlows.TryRemove(flowId, out _);
                 this.ModelState.AddModelError(nameof(input.Body), mod.ValidationErrorMessage ?? "Invalid reply.");
 
                 var entry = await this.entryRepo.GetByIdAsync(state.DirectoryEntryId);
@@ -335,6 +345,7 @@ namespace DirectoryManager.Web.Controllers
 
             this.ClearCachedItems();
             this.cache.Remove(CacheKey(flowId));
+            // ✅ flowId tombstone stays in SubmittedFlows — intentional, prevents replay.
 
             // ✅ Your Replies Thanks view reads TempData["ReplyMessage"]
             this.TempData["ReplyMessage"] = mod.ThankYouMessage;
