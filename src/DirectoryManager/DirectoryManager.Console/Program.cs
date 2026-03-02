@@ -3,7 +3,6 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using DirectoryManager.Console.Models;
-using DirectoryManager.Console.Services;
 using DirectoryManager.Data.Constants;
 using DirectoryManager.Data.DbContextInfo;
 using DirectoryManager.Data.Models; // DirectoryEntry
@@ -18,8 +17,6 @@ using Nager.PublicSuffix;
 using Nager.PublicSuffix.RuleProviders;
 using Nager.PublicSuffix.RuleProviders.CacheProviders;
 using Newtonsoft.Json;
-using OpenAI;
-using OpenAI.Chat;
 using Microsoft.Extensions.DependencyInjection;
 
 
@@ -38,8 +35,7 @@ var services = new ServiceCollection()
     .AddTransient<ICategoryRepository, CategoryRepository>()
     .AddTransient<IExcludeUserAgentRepository, ExcludeUserAgentRepository>()
     .AddTransient<ITagRepository, TagRepository>()
-    .AddTransient<IDirectoryEntryTagRepository, DirectoryEntryTagRepository>()
-    .AddScoped<IAITagService, AITagService>();
+    .AddTransient<IDirectoryEntryTagRepository, DirectoryEntryTagRepository>();
 
 // ✅ Register the typed HttpClient on the IServiceCollection (separate statement)
 services.AddHttpClient<IDomainRegistrationDateService, DomainRegistrationDateService>(client =>
@@ -93,26 +89,7 @@ if (choice == "1")
 }
 else if (choice == "2")
 {
-    var apiKey = "";
-
-    var openAi = new OpenAIClient(apiKey);
-    var directoryEntryRepo = serviceProvider.GetRequiredService<IDirectoryEntryRepository>();
-    var tagRepo = serviceProvider.GetRequiredService<ITagRepository>();
-    var entryTagRepo = serviceProvider.GetRequiredService<IDirectoryEntryTagRepository>();
-
-    var chat = openAi.GetChatClient("gpt-4.1");
-    var messages = new List<ChatMessage>
-    {
-        new SystemChatMessage("You are a helpful assistant."),
-        new UserChatMessage("Give me 3 comma-separated tags for: Monero privacy-focused wallet")
-    };
-
-    var aiTagService = new AITagService(openAi, directoryEntryRepo, tagRepo, entryTagRepo);
-
-    await aiTagService.GenerateTagsForAllEntriesAsync();
-
-    var response = await chat.CompleteChatAsync(messages).ConfigureAwait(false);
-    var tags = response.Value.Content[0].Text;
+   
 }
 else if (choice == "3")
 {
