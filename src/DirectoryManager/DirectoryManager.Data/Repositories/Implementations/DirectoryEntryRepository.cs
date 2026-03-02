@@ -20,6 +20,20 @@ namespace DirectoryManager.Data.Repositories.Implementations
         private readonly IDirectoryEntriesAuditRepository auditRepo;
 
         /// <summary>
+        /// Prior vote count (m). New items are treated as if they already have
+        /// this many reviews at the prior mean. Raise this to demand more
+        /// evidence before an item escapes the prior; lower it to trust small
+        /// samples more quickly.
+        /// </summary>
+        private const double RatingPriorCount = 10.0;
+
+        /// <summary>
+        /// Prior mean (C). The neutral score an unreviewed item is assumed to
+        /// have. 3.0 is the midpoint of a 1–5 star scale.
+        /// </summary>
+        private const double RatingPriorMean = 3.0;
+
+        /// <summary>
         /// Initializes a new instance of the <see cref="DirectoryEntryRepository"/> class.
         /// </summary>
         public DirectoryEntryRepository(
@@ -180,7 +194,6 @@ namespace DirectoryManager.Data.Repositories.Implementations
 
         public async Task<List<DirectoryEntrySitemapRow>> GetSitemapEntriesAsync(CancellationToken ct = default)
         {
-            // ✅ only columns needed to build /site/{key} + lastmod + removed filter + countries
             return await this.context.DirectoryEntries
                 .AsNoTracking()
                 .Where(e => e.DirectoryStatus != DirectoryStatus.Removed)
@@ -215,7 +228,6 @@ namespace DirectoryManager.Data.Repositories.Implementations
 
             var normalized = NormalizeSearchTerm(query);
 
-            // ✅ includeRemoved = true
             var filtered = this.BuildSearchServerSideQuery(normalized, includeRemoved: true);
 
             var candidates = await filtered.ToListAsync().ConfigureAwait(false);
@@ -252,7 +264,6 @@ namespace DirectoryManager.Data.Repositories.Implementations
 
         public async Task<List<CountryCountRow>> GetActiveCountryCountsForSitemapAsync(CancellationToken ct = default)
         {
-            // Mirror your "active" definition used in sitemap
             var activeStatuses = new[]
             {
                 DirectoryStatus.Admitted,
@@ -261,7 +272,6 @@ namespace DirectoryManager.Data.Repositories.Implementations
                 DirectoryStatus.Questionable
             };
 
-            // ✅ returns only code + count, not whole entries
             return await this.context.DirectoryEntries
                 .AsNoTracking()
                 .Where(e =>
@@ -309,7 +319,6 @@ namespace DirectoryManager.Data.Repositories.Implementations
 
         public async Task<IEnumerable<DirectoryEntry>> GetNewestAdditions(int count)
         {
-            // Phase 1: just fetch the IDs of the newest 'count' entries
             var ids = await this.context.DirectoryEntries
                 .Where(x => x.DirectoryStatus != DirectoryStatus.Removed)
                 .AsNoTracking()
@@ -324,14 +333,12 @@ namespace DirectoryManager.Data.Repositories.Implementations
                 return Array.Empty<DirectoryEntry>();
             }
 
-            // Phase 2: eager-load the full entities (and their SubCategory/Category/Tags)
             var entries = await this.BaseQuery()
                 .AsNoTracking()
                 .Where(e => ids.Contains(e.DirectoryEntryId))
                 .ToListAsync()
                 .ConfigureAwait(false);
 
-            // Finally, re-order them by CreateDate descending
             return entries
                 .OrderByDescending(e => e.CreateDate)
                 .ToList();
@@ -489,7 +496,6 @@ namespace DirectoryManager.Data.Repositories.Implementations
 
         public async Task<PagedResult<DirectoryEntry>> ListEntriesByCategoryAsync(int categoryId, int page, int pageSize)
         {
-            // base query: only non-removed, matching category
             var query = this.context.DirectoryEntries
                 .Include(e => e.SubCategory)
                 .ThenInclude(sc => sc.Category)
@@ -497,8 +503,6 @@ namespace DirectoryManager.Data.Repositories.Implementations
                     e.DirectoryStatus != DirectoryStatus.Removed &&
                     (e.SubCategory != null &&
                     e.SubCategory.CategoryId == categoryId))
-
-                // order by subcategory name then entry name
                 .OrderBy(e => e.SubCategory!.Name)
                 .ThenBy(e => e.Name);
 
@@ -566,8 +570,6 @@ namespace DirectoryManager.Data.Repositories.Implementations
 
         public async Task<IReadOnlyList<DirectoryEntryUrl>> GetAllIdsAndUrlsAsync()
         {
-            // AsNoTracking → no change-tracking overhead
-            // filter out Removed/Unknown if you only want “active”
             var inactive = new[] { DirectoryStatus.Removed, DirectoryStatus.Unknown };
 
             return await this.context.DirectoryEntries
@@ -609,7 +611,6 @@ namespace DirectoryManager.Data.Repositories.Implementations
                 pageSize = 10;
             }
 
-            // Group active entries with a non-empty, known ISO2 country code
             var grouped = await this.context.DirectoryEntries
                 .Where(e =>
                     (e.DirectoryStatus == DirectoryStatus.Verified
@@ -626,8 +627,7 @@ namespace DirectoryManager.Data.Repositories.Implementations
                 return new PagedResult<CountryWithCount> { TotalCount = 0, Items = new List<CountryWithCount>() };
             }
 
-            // Map to display names using CountryHelper; drop unknown codes
-            var countries = CountryHelper.GetCountries(); // ISO2 -> Full Name
+            var countries = CountryHelper.GetCountries();
             var items = grouped
                 .Where(x => countries.ContainsKey(x.Code))
                 .Select(x =>
@@ -684,7 +684,6 @@ namespace DirectoryManager.Data.Repositories.Implementations
 
         public async Task<List<IdNameOption>> ListCategoryOptionsAsync()
         {
-            // Derive categories from entries (no separate CategoryRepository required)
             var cats = await this.BaseQuery()
                 .AsNoTracking()
                 .Where(e => e.SubCategory != null && e.SubCategory.Category != null)
@@ -723,7 +722,6 @@ namespace DirectoryManager.Data.Repositories.Implementations
                 return new Dictionary<int, DirectoryEntry>();
             }
 
-            // ✅ Fetch what you need for linking: entry + subcategory + category
             var rows = await this.context.DirectoryEntries
                 .AsNoTracking()
                 .Where(d => list.Contains(d.DirectoryEntryId))
@@ -733,17 +731,13 @@ namespace DirectoryManager.Data.Repositories.Implementations
                     DirectoryEntryId = d.DirectoryEntryId,
                     Name = d.Name,
                     Link = d.Link,
-
-                    // ✅ needed for building sponsorship placement URLs
                     SubCategoryId = d.SubCategoryId,
-
                     SubCategory = d.SubCategory == null ? null : new Subcategory
                     {
                         SubCategoryId = d.SubCategory.SubCategoryId,
                         CategoryId = d.SubCategory.CategoryId,
                         Name = d.SubCategory.Name,
                         SubCategoryKey = d.SubCategory.SubCategoryKey,
-
                         Category = d.SubCategory.Category == null ? null : new Category
                         {
                             CategoryId = d.SubCategory.Category.CategoryId,
@@ -765,13 +759,8 @@ namespace DirectoryManager.Data.Repositories.Implementations
                 return new PagedResult<DirectoryEntry>();
             }
 
-            // 1) normalize inputs (same as before)
             var normalized = NormalizeSearchTerm(term);
-
-            // 2) build server-side query (same predicates as before)
             var filtered = this.BuildSearchServerSideQuery(normalized, false);
-
-            // 3) materialize + score in-memory (same scoring as before)
             var candidates = await filtered.ToListAsync().ConfigureAwait(false);
 
             var scored = ScoreSearchCandidates(
@@ -787,7 +776,6 @@ namespace DirectoryManager.Data.Repositories.Implementations
                     normalized.termCompact)
                 .ToList();
 
-            // 4) paging (same as before)
             int total = scored.Count;
             var items = scored
                 .Skip((page - 1) * pageSize)
@@ -800,8 +788,6 @@ namespace DirectoryManager.Data.Repositories.Implementations
 
         public async Task<List<string>> ListActiveCountryCodesAsync(CancellationToken ct = default)
         {
-            // “Active” here mirrors your other “active” logic:
-            // Verified/Admitted/Questionable/Scam only (exclude Removed/Unknown).
             return await this.context.DirectoryEntries
                 .AsNoTracking()
                 .Where(e =>
@@ -840,12 +826,10 @@ namespace DirectoryManager.Data.Repositories.Implementations
                 };
             }
 
-            // normal search first
             var result = await this.SearchAsync(query, page, pageSize).ConfigureAwait(false);
             result.Page = page;
             result.PageSize = pageSize;
 
-            // ✅ if nothing found, try author-post search
             if (result.TotalCount == 0)
             {
                 var authorFallback = await this.SearchByAuthorPostsAsync(
@@ -874,7 +858,6 @@ namespace DirectoryManager.Data.Repositories.Implementations
             var statuses = GetStatusesOrDefault(q);
             var baseQ = this.BuildFilterBaseQuery(q, statuses);
 
-            // -------- Sorting + paging (phase 1: get IDs) ----------
             var pageIdsQ = this.BuildFilterPageIdsQuery(baseQ, q.Sort);
 
             int total = await this.GetFilterTotalAsync(baseQ, q.Sort).ConfigureAwait(false);
@@ -890,7 +873,6 @@ namespace DirectoryManager.Data.Repositories.Implementations
                 return new PagedResult<DirectoryEntry> { TotalCount = total, Items = new List<DirectoryEntry>() };
             }
 
-            // -------- Phase 2: load full entities with Includes ----------
             var items = await this.LoadEntriesByIdsPreservingOrderAsync(pageIds).ConfigureAwait(false);
 
             return new PagedResult<DirectoryEntry>
@@ -901,11 +883,11 @@ namespace DirectoryManager.Data.Repositories.Implementations
         }
 
         public async Task<PagedResult<DirectoryEntry>> SearchByAuthorPostsAsync(
-    string authorQuery,
-    int page,
-    int pageSize,
-    bool includeRemoved = false,
-    CancellationToken ct = default)
+            string authorQuery,
+            int page,
+            int pageSize,
+            bool includeRemoved = false,
+            CancellationToken ct = default)
         {
             page = Math.Max(1, page);
             pageSize = Math.Clamp(pageSize, 10, 50);
@@ -939,14 +921,12 @@ namespace DirectoryManager.Data.Repositories.Implementations
                         (n.rootPattern != null && EF.Functions.Like(c.AuthorFingerprint, n.rootPattern)) ||
                         (n.compactPattern != null && EF.Functions.Like(c.AuthorFingerprint.Replace(" ", ""), n.compactPattern))));
 
-            // Base entry filter (removed or not)
             var entryFilter = this.context.DirectoryEntries.AsNoTracking().AsQueryable();
             if (!includeRemoved)
             {
                 entryFilter = entryFilter.Where(e => e.DirectoryStatus != DirectoryStatus.Removed);
             }
 
-            // ✅ Reviews grouped by EntryId -> last activity
             var reviewsActivity =
                 from r in ReviewAuthorFilter(this.context.DirectoryEntryReviews.AsNoTracking())
                 join e in entryFilter on r.DirectoryEntryId equals e.DirectoryEntryId
@@ -954,7 +934,6 @@ namespace DirectoryManager.Data.Repositories.Implementations
                 group r by r.DirectoryEntryId into g
                 select new { EntryId = g.Key, Last = g.Max(x => x.CreateDate) };
 
-            // ✅ Replies grouped by EntryId -> last activity (requires join to review -> entry)
             var repliesActivity =
                 from c in ReplyAuthorFilter(this.context.DirectoryEntryReviewComments.AsNoTracking())
                 join r in this.context.DirectoryEntryReviews.AsNoTracking()
@@ -965,7 +944,6 @@ namespace DirectoryManager.Data.Repositories.Implementations
                 group c by r.DirectoryEntryId into g
                 select new { EntryId = g.Key, Last = g.Max(x => x.UpdateDate ?? x.CreateDate) };
 
-            // Merge (EntryId -> max(last))
             var merged =
                 from x in reviewsActivity.Concat(repliesActivity)
                 group x by x.EntryId into g
@@ -983,7 +961,6 @@ namespace DirectoryManager.Data.Repositories.Implementations
                 };
             }
 
-            // Page the ids by latest activity
             var pageIds = await merged
                 .OrderByDescending(x => x.Last)
                 .ThenByDescending(x => x.EntryId)
@@ -993,7 +970,6 @@ namespace DirectoryManager.Data.Repositories.Implementations
                 .ToListAsync(ct)
                 .ConfigureAwait(false);
 
-            // Load full entries with Includes, preserving order
             var items = await this.LoadEntriesByIdsPreservingOrderAsync(pageIds).ConfigureAwait(false);
 
             return new PagedResult<DirectoryEntry>
@@ -1007,16 +983,12 @@ namespace DirectoryManager.Data.Repositories.Implementations
 
         private IQueryable<DirectoryEntry> BuildSearchServerSideQuery(SearchTermInfo n, bool includeRemoved)
         {
-            // 1) server-side filter (kept & extended with URL-variant + compact matches)
             return this.BaseQuery()
                 .Where(e =>
                     (includeRemoved || e.DirectoryStatus != DirectoryStatus.Removed) &&
                     (
-
-                        // Country
                         (n.countryCode != null && e.CountryCode == n.countryCode)
 
-                        // Name (kept + compact)
                         || EF.Functions.Like(e.Name.ToLower(), n.primaryPattern)
                         || (n.rootPattern != null && EF.Functions.Like(e.Name.ToLower(), n.rootPattern))
                         || (n.compactPattern != null &&
@@ -1028,22 +1000,18 @@ namespace DirectoryManager.Data.Repositories.Implementations
                                       .Replace("_", ""),
                                 n.compactPattern))
 
-                        // Description
                         || EF.Functions.Like((e.Description ?? "").ToLower(), n.primaryPattern)
                         || (n.rootPattern != null && EF.Functions.Like((e.Description ?? "").ToLower(), n.rootPattern))
 
-                        // Subcategory / Category
                         || EF.Functions.Like(e.SubCategory!.Name.ToLower(), n.primaryPattern)
                         || (n.rootPattern != null && EF.Functions.Like(e.SubCategory.Name.ToLower(), n.rootPattern))
                         || EF.Functions.Like(e.SubCategory.Category!.Name.ToLower(), n.primaryPattern)
                         || (n.rootPattern != null && EF.Functions.Like(e.SubCategory.Category.Name.ToLower(), n.rootPattern))
 
-                        // Tags
                         || e.EntryTags.Any(et =>
                             EF.Functions.Like(et.Tag.Name.ToLower(), n.primaryPattern) ||
                             (n.rootPattern != null && EF.Functions.Like(et.Tag.Name.ToLower(), n.rootPattern)))
 
-                        // Note, Processor, Location, Contact
                         || EF.Functions.Like((e.Note ?? "").ToLower(), n.primaryPattern)
                         || (n.rootPattern != null && EF.Functions.Like((e.Note ?? "").ToLower(), n.rootPattern))
                         || EF.Functions.Like((e.Processor ?? "").ToLower(), n.primaryPattern)
@@ -1053,7 +1021,6 @@ namespace DirectoryManager.Data.Repositories.Implementations
                         || EF.Functions.Like((e.Contact ?? "").ToLower(), n.primaryPattern)
                         || (n.rootPattern != null && EF.Functions.Like((e.Contact ?? "").ToLower(), n.rootPattern))
 
-                        // Links (kept + compact for separator-insensitive matches)
                         || EF.Functions.Like((e.Link ?? "").ToLower(), n.primaryPattern)
                         || (n.rootPattern != null && EF.Functions.Like((e.Link ?? "").ToLower(), n.rootPattern))
                         || (n.compactPattern != null &&
@@ -1098,7 +1065,6 @@ namespace DirectoryManager.Data.Repositories.Implementations
                                                   .Replace("_", ""),
                                 n.compactPattern))
 
-                        // URL variants
                         || (n.isUrlTerm && (
                                EF.Functions.Like((e.Link ?? "").ToLower(), n.pNoSlash) ||
                                EF.Functions.Like((e.Link ?? "").ToLower(), n.pWithSlash) ||
@@ -1192,10 +1158,8 @@ namespace DirectoryManager.Data.Repositories.Implementations
         {
             term = term.Trim().ToLowerInvariant();
 
-            // Country code extraction
             string? countryCode = Utilities.Helpers.CountryHelper.ExtractCountryCode(term);
 
-            // plural→singular
             var primaryPattern = $"%{term}%";
             string? rootTerm = null;
             string? rootPattern = null;
@@ -1205,11 +1169,9 @@ namespace DirectoryManager.Data.Repositories.Implementations
                 rootPattern = $"%{rootTerm}%";
             }
 
-            // Compact/normalized term for separator-insensitive matching
             string termCompact = new string(term.Where(char.IsLetterOrDigit).ToArray());
             string? compactPattern = string.IsNullOrEmpty(termCompact) ? null : $"%{termCompact}%";
 
-            // --- URL-awareness ---------------------------------
             static bool LooksLikeUrl(string s) =>
                 s.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
                 s.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
@@ -1249,7 +1211,6 @@ namespace DirectoryManager.Data.Repositories.Implementations
             string hostOnly = isUrlTerm ? ExtractHost(term) : string.Empty;
             string hostNoWww = isUrlTerm ? StripWww(hostOnly) : string.Empty;
 
-            // LIKE patterns for EF
             string pNoSlash = $"%{noSlash}%";
             string pWithSlash = $"%{withSlash}%";
             string pHostOnly = string.IsNullOrEmpty(hostOnly) ? "" : $"%{hostOnly}%";
@@ -1319,13 +1280,11 @@ namespace DirectoryManager.Data.Repositories.Implementations
 
             const int CountryBoost = 7;
 
-            // precompute compact term for scoring
             string termCompactForScore = termCompact;
 
             return candidates
                 .Select(e =>
                 {
-                    // compact versions of key fields
                     string nameNorm = NormalizeToken(e.Name);
                     string linkNorm = NormalizeToken(e.Link);
                     string link2Norm = NormalizeToken(e.Link2);
@@ -1333,8 +1292,6 @@ namespace DirectoryManager.Data.Repositories.Implementations
                     string proofNorm = NormalizeToken(e.ProofLink);
 
                     int hits =
-
-                        // text-ish fields
                         CountOcc(e.Name, term) + (rootTerm != null ? CountOcc(e.Name, rootTerm) : 0) +
                         CountOcc(e.Description, term) + (rootTerm != null ? CountOcc(e.Description, rootTerm) : 0) +
                         CountOcc(e.SubCategory?.Name, term) + (rootTerm != null ? CountOcc(e.SubCategory?.Name, rootTerm) : 0) +
@@ -1344,14 +1301,11 @@ namespace DirectoryManager.Data.Repositories.Implementations
                         CountOcc(e.Processor, term) + (rootTerm != null ? CountOcc(e.Processor, rootTerm) : 0) +
                         CountOcc(e.Location, term) + (rootTerm != null ? CountOcc(e.Location, rootTerm) : 0) +
                         CountOcc(e.Contact, term) + (rootTerm != null ? CountOcc(e.Contact, rootTerm) : 0) +
-
-                        // link-ish fields
                         CountOcc(e.Link, term) + (rootTerm != null ? CountOcc(e.Link, rootTerm) : 0) +
                         CountOcc(e.Link2, term) + (rootTerm != null ? CountOcc(e.Link2, rootTerm) : 0) +
                         CountOcc(e.Link3, term) + (rootTerm != null ? CountOcc(e.Link3, rootTerm) : 0) +
                         CountOcc(e.ProofLink, term) + (rootTerm != null ? CountOcc(e.ProofLink, rootTerm) : 0) +
 
-                        // compact/separator-insensitive hits
                         (!string.IsNullOrEmpty(termCompactForScore)
                             ? CountOcc(nameNorm, termCompactForScore)
                               + CountOcc(linkNorm, termCompactForScore)
@@ -1360,7 +1314,6 @@ namespace DirectoryManager.Data.Repositories.Implementations
                               + CountOcc(proofNorm, termCompactForScore)
                             : 0) +
 
-                        // URL variants count hits as well
                         (isUrlTerm
                             ? CountOcc(e.Link, noSlash) + CountOcc(e.Link, withSlash)
                              + CountOcc(e.Link2, noSlash) + CountOcc(e.Link2, withSlash)
@@ -1390,8 +1343,6 @@ namespace DirectoryManager.Data.Repositories.Implementations
 
                     return (Entry: e, Score: score, Hits: hits, Weight: weight, CountryMatch: countryMatch);
                 })
-
-                // include items that only matched by country
                 .Where(x => x.Hits > 0 || x.CountryMatch)
                 .OrderByDescending(x => x.Weight)
                 .ThenByDescending(x => x.Score);
@@ -1399,60 +1350,13 @@ namespace DirectoryManager.Data.Repositories.Implementations
 
         private static List<DirectoryStatus> GetStatusesOrDefault(DirectoryFilterQuery q)
         {
-            // Default statuses: Admitted + Verified
             return (q.Statuses is { Count: > 0 })
                 ? q.Statuses.Distinct().ToList()
                 : new List<DirectoryStatus> { DirectoryStatus.Admitted, DirectoryStatus.Verified };
         }
 
-        private static void ApplyTagFilter(ref IQueryable<DirectoryEntry> baseQ, DirectoryFilterQuery q)
-        {
-            if (q.TagIds is not { Count: > 0 })
-            {
-                return;
-            }
-
-            var tagIds = q.TagIds
-                .Where(x => x > 0)
-                .Distinct()
-                .ToList();
-
-            if (tagIds.Count == 0)
-            {
-                return;
-            }
-
-            baseQ = baseQ.Where(e =>
-                e.EntryTags
-                 .Where(et => tagIds.Contains(et.TagId))
-                 .Select(et => et.TagId)
-                 .Distinct()
-                 .Count() == tagIds.Count);
-        }
-
-        private IQueryable<RatedAggRow> BuildRatedAggregate(IQueryable<DirectoryEntry> baseQ)
-        {
-            var approvedRatings = this.context.DirectoryEntryReviews
-                .AsNoTracking()
-                .Where(r => r.ModerationStatus == ReviewModerationStatus.Approved && r.Rating.HasValue);
-
-            // IMPORTANT: no ToList/AsEnumerable here
-            return
-                from e in baseQ
-                join r in approvedRatings on e.DirectoryEntryId equals r.DirectoryEntryId
-                group r by new { e.DirectoryEntryId, e.CreateDate } into g
-                select new RatedAggRow
-                {
-                    DirectoryEntryId = g.Key.DirectoryEntryId,
-                    CreateDate = g.Key.CreateDate,
-                    AvgRating = g.Average(x => x.Rating!.Value),
-                    ReviewCount = g.Count()
-                };
-        }
-
         private IQueryable<DirectoryEntry> BuildFilterBaseQuery(DirectoryFilterQuery q, List<DirectoryStatus> statuses)
         {
-            // IMPORTANT: start from DirectoryEntries WITHOUT Includes
             var baseQ = this.context.DirectoryEntries.AsNoTracking().AsQueryable();
 
             // Status filter
@@ -1508,7 +1412,63 @@ namespace DirectoryManager.Data.Repositories.Implementations
             return baseQ;
         }
 
-        // 3) Your page-id query builder (UPDATED for FoundedDate sorts)
+        private static void ApplyTagFilter(ref IQueryable<DirectoryEntry> baseQ, DirectoryFilterQuery q)
+        {
+            if (q.TagIds is not { Count: > 0 })
+            {
+                return;
+            }
+
+            var tagIds = q.TagIds
+                .Where(x => x > 0)
+                .Distinct()
+                .ToList();
+
+            if (tagIds.Count == 0)
+            {
+                return;
+            }
+
+            baseQ = baseQ.Where(e =>
+                e.EntryTags
+                 .Where(et => tagIds.Contains(et.TagId))
+                 .Select(et => et.TagId)
+                 .Distinct()
+                 .Count() == tagIds.Count);
+        }
+
+        /// <summary>
+        /// Builds the rated aggregate query using a Bayesian weighted average:
+        ///   BayesianScore = (Σ ratings + m × C) / (count + m)
+        /// where m = <see cref="RatingPriorCount"/> and C = <see cref="RatingPriorMean"/>.
+        /// This prevents a single 5★ review from outranking items with many high ratings.
+        /// </summary>
+        private IQueryable<RatedAggRow> BuildRatedAggregate(IQueryable<DirectoryEntry> baseQ)
+        {
+            var approvedRatings = this.context.DirectoryEntryReviews
+                .AsNoTracking()
+                .Where(r => r.ModerationStatus == ReviewModerationStatus.Approved && r.Rating.HasValue);
+
+            return
+                from e in baseQ
+                join r in approvedRatings on e.DirectoryEntryId equals r.DirectoryEntryId
+                group r by new { e.DirectoryEntryId, e.CreateDate } into g
+                select new RatedAggRow
+                {
+                    DirectoryEntryId = g.Key.DirectoryEntryId,
+                    CreateDate = g.Key.CreateDate,
+                    AvgRating = g.Average(x => x.Rating!.Value),
+                    ReviewCount = g.Count(),
+
+                    // Bayesian weighted average — computed in SQL by EF Core.
+                    // Pulls low-review-count items toward the prior mean (3.0),
+                    // so volume of evidence is required to achieve a high rank.
+                    BayesianScore =
+                        (g.Sum(x => (double)x.Rating!.Value) + (RatingPriorCount * RatingPriorMean))
+                        / (g.Count() + RatingPriorCount)
+                };
+        }
+
         private IQueryable<int> BuildFilterPageIdsQuery(IQueryable<DirectoryEntry> baseQ, DirectoryFilterSort sort)
         {
             if (sort == DirectoryFilterSort.Newest)
@@ -1563,14 +1523,15 @@ namespace DirectoryManager.Data.Repositories.Implementations
                     .Select(e => e.DirectoryEntryId);
             }
 
-            // Rating sorts — ratedAgg is IQueryable<RatedAggRow>
+            // Rating sorts — ordered by Bayesian weighted average score
             IQueryable<RatedAggRow> ratedAgg = this.BuildRatedAggregate(baseQ);
 
             if (sort == DirectoryFilterSort.HighestRating)
             {
                 return ratedAgg
-                    .OrderByDescending(x => x.AvgRating)
-                    .ThenByDescending(x => x.ReviewCount)
+                    .OrderByDescending(x => x.BayesianScore)  // weighted: volume of evidence matters
+                    .ThenByDescending(x => x.ReviewCount)     // more reviews wins ties
+                    .ThenByDescending(x => x.AvgRating)       // raw average as final tie-break
                     .ThenByDescending(x => x.CreateDate)
                     .ThenByDescending(x => x.DirectoryEntryId)
                     .Select(x => x.DirectoryEntryId);
@@ -1578,8 +1539,9 @@ namespace DirectoryManager.Data.Repositories.Implementations
 
             // LowestRating
             return ratedAgg
-                .OrderBy(x => x.AvgRating)
-                .ThenByDescending(x => x.ReviewCount)
+                .OrderBy(x => x.BayesianScore)                // weighted
+                .ThenByDescending(x => x.ReviewCount)         // more reviews wins ties
+                .ThenBy(x => x.AvgRating)                     // raw average as final tie-break
                 .ThenBy(x => x.CreateDate)
                 .ThenBy(x => x.DirectoryEntryId)
                 .Select(x => x.DirectoryEntryId);
@@ -1591,11 +1553,11 @@ namespace DirectoryManager.Data.Repositories.Implementations
             public DateTime CreateDate { get; init; }
             public double AvgRating { get; init; }
             public int ReviewCount { get; init; }
+            public double BayesianScore { get; init; }
         }
 
         private async Task<int> GetFilterTotalAsync(IQueryable<DirectoryEntry> baseQ, DirectoryFilterSort sort)
         {
-            // Total count logic
             if (sort is DirectoryFilterSort.HighestRating or DirectoryFilterSort.LowestRating)
             {
                 var approvedRatings = this.context.DirectoryEntryReviews
@@ -1615,14 +1577,12 @@ namespace DirectoryManager.Data.Repositories.Implementations
 
         private async Task<List<DirectoryEntry>> LoadEntriesByIdsPreservingOrderAsync(List<int> pageIds)
         {
-            // Phase 2: load full entities with Includes
             var items = await this.BaseQuery()
                 .AsNoTracking()
                 .Where(e => pageIds.Contains(e.DirectoryEntryId))
                 .ToListAsync()
                 .ConfigureAwait(false);
 
-            // Re-apply the correct order in memory to match the ID order
             var order = pageIds
                 .Select((id, idx) => new { id, idx })
                 .ToDictionary(x => x.id, x => x.idx);
@@ -1657,8 +1617,7 @@ namespace DirectoryManager.Data.Repositories.Implementations
         /// <summary>
         /// Groups a list of entries by their CreateDate (date-only).
         /// </summary>
-        private List<GroupedDirectoryEntry> GroupByDate(
-            List<DirectoryEntry> list)
+        private List<GroupedDirectoryEntry> GroupByDate(List<DirectoryEntry> list)
         {
             return list
                 .GroupBy(e => e.CreateDate.Date)
