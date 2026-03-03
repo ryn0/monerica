@@ -3,6 +3,7 @@
 @using DirectoryManager.Web.Constants
 @using DirectoryManager.Web.Models.Sponsorship
 @inject DirectoryManager.Web.Services.Interfaces.ICacheService cacheHelper
+@inject DirectoryManager.Web.Services.Interfaces.IUrlResolutionService urlResolver
 @model SponsorshipOptionsVm
 
 @{
@@ -93,7 +94,7 @@
         <div style="margin-top: 10px; display:flex; flex-wrap:wrap; gap:10px;">
             @if (!string.IsNullOrWhiteSpace(siteUrl))
             {
-                <a class="btn btn-info" href="@siteUrl" target="_blank" rel="noopener">View listing page</a>
+                <a class="btn btn-info" href="@urlResolver.ResolveToRoot(siteUrl)" target="_blank" rel="noopener">View listing page</a>
             }
 
             @if (!string.IsNullOrWhiteSpace(Model.ListingUrl))
