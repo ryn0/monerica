@@ -38,6 +38,14 @@
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </None>
+    <None Update="tor\tor.exe">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
+
+
+	<ItemGroup>
+	  <Folder Include="tor\" />
+	</ItemGroup>
 
 </Project>

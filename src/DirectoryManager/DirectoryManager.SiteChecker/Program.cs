@@ -1,7 +1,7 @@
 ﻿using DirectoryManager.Data.Constants;
 using DirectoryManager.Data.DbContextInfo;
 using DirectoryManager.Data.Enums;
-using DirectoryManager.Data.Extensions; // Import for AddRepositories
+using DirectoryManager.Data.Extensions;
 using DirectoryManager.Data.Models;
 using DirectoryManager.Data.Repositories.Interfaces;
 using DirectoryManager.SiteChecker.Helpers;
@@ -12,6 +12,8 @@ using Microsoft.Extensions.DependencyInjection;
 Console.WriteLine("Starting SiteChecker");
 
 const string UserAgentHeader = "UserAgent:Header";
+const string TorProxyHostKey = "TorProxy:Host";
+const string TorProxyPortKey = "TorProxy:Port";
 const string SiteOfflineMessage = "site offline";
 
 // Build configuration
@@ -20,55 +22,152 @@ var config = new ConfigurationBuilder()
     .AddJsonFile(DirectoryManager.Common.Constants.StringConstants.AppSettingsFileName)
     .Build();
 
-// Get the User-Agent header value from the configuration
-var userAgentHeader = config[UserAgentHeader] ?? throw new InvalidOperationException($"{UserAgentHeader} is missing.");
+var userAgentHeader = config[UserAgentHeader]
+    ?? throw new InvalidOperationException($"{UserAgentHeader} is missing.");
 
-// Register services in the service container
+var torHost = config[TorProxyHostKey] ?? "127.0.0.1";
+var torPort = int.TryParse(config[TorProxyPortKey], out var p) ? p : 9050;
+
+// ── Tor setup ─────────────────────────────────────────────────────────────
+var torExePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tor", "tor.exe");
+bool torAvailable = await TorWebPageChecker.TryStartTorAsync(torExePath, torHost, torPort);
+
+// Register services
 var serviceProvider = new ServiceCollection()
     .AddDbContext<ApplicationDbContext>(options =>
         options.UseSqlServer(config.GetConnectionString(StringConstants.DefaultConnection)))
-    .AddDbRepositories() // Register all repositories through the centralized method
-    .AddSingleton(new WebPageChecker(userAgentHeader)) // WebPageChecker
+    .AddDbRepositories()
+    .AddSingleton(new WebPageChecker(userAgentHeader))
+    .AddSingleton(new TorWebPageChecker(userAgentHeader, torHost, torPort))
     .BuildServiceProvider();
 
-// Retrieve required services
 var entriesRepo = serviceProvider.GetRequiredService<IDirectoryEntryRepository>();
-var webPageChecker = serviceProvider.GetRequiredService<WebPageChecker>();
-
-// Get all entries
 var allEntries = await entriesRepo.GetAllIdsAndUrlsAsync();
-var offlines = new List<string>();
 
-// Kick off one Task per entry
+// Throttle to 10 concurrent checks
+var semaphore = new SemaphoreSlim(10);
+
 var tasks = allEntries
-  .Where(e =>
-    !e.Link.Contains(".onion", StringComparison.OrdinalIgnoreCase) &&
-    !e.Link.Contains(".i2p", StringComparison.OrdinalIgnoreCase))
-  .Select(entry => CheckAndSubmitAsync((entry.DirectoryEntryId, entry.Link), serviceProvider));
+    .Select(async entry =>
+    {
+        await semaphore.WaitAsync();
+        try
+        {
+            await CheckAndSubmitAsync((entry.DirectoryEntryId, entry.Link), serviceProvider, torAvailable);
+        }
+        finally
+        {
+            semaphore.Release();
+        }
+    });
 
-// Wait for all the tasks to complete
 await Task.WhenAll(tasks);
 
 Console.WriteLine("-----------------");
+Console.WriteLine("Done.");
 
-if (offlines.Count > 0)
+// ── Helpers ───────────────────────────────────────────────────────────────
+
+// Checks each clearnet URL in sequence — returns true if ANY are offline
+async Task<bool> CheckClearnetUrlsAsync(List<string> urls, WebPageChecker checker)
 {
-    Console.WriteLine("Offline:");
-    foreach (var offline in offlines)
+    foreach (var url in urls)
     {
-        Console.WriteLine(offline);
+        bool isOnline = false;
+        try
+        {
+            if (Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            {
+                isOnline = await checker.IsOnlineAsync(uri);
+            }
+        }
+        catch { }
+
+        Console.WriteLine($"[clearnet] {url} → {(isOnline ? "online" : "offline")}");
+
+        if (!isOnline)
+        {
+            return true; // offline
+        }
     }
+
+    return false; // all online
 }
-else
+
+// Checks a single .onion URL — returns true if offline
+async Task<bool> CheckOnionUrlAsync(string url, TorWebPageChecker torChecker)
 {
-    Console.WriteLine("None offline");
+    bool isOnline = false;
+    try
+    {
+        if (Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            isOnline = await torChecker.IsOnlineAsync(uri);
+        }
+    }
+    catch { }
+
+    Console.WriteLine($"[onion] {url} → {(isOnline ? "online" : "offline")}");
+
+    return !isOnline;
+}
+
+async Task CheckAndSubmitAsync(
+    (int DirectoryEntryId, string Link) entry,
+    IServiceProvider rootProvider,
+    bool torAvailable)
+{
+    using var scope = rootProvider.CreateScope();
+
+    var scopedEntriesRepo = scope.ServiceProvider.GetRequiredService<IDirectoryEntryRepository>();
+    var scopedSubmissionRepo = scope.ServiceProvider.GetRequiredService<ISubmissionRepository>();
+    var checker = scope.ServiceProvider.GetRequiredService<WebPageChecker>();
+    var torChecker = scope.ServiceProvider.GetRequiredService<TorWebPageChecker>();
+
+    var dirEntry = await scopedEntriesRepo.GetByIdAsync(entry.DirectoryEntryId);
+    if (dirEntry == null)
+    {
+        Console.WriteLine($"Entry {entry.DirectoryEntryId} not found.");
+        return;
+    }
+
+    // ── 1. Build clearnet task (Link, LinkA) ──────────────────────────────
+    var clearnetUrls = new[] { dirEntry.Link, dirEntry.LinkA }
+        .Where(u => !string.IsNullOrWhiteSpace(u))
+        .Where(u => !u!.Contains(".onion", StringComparison.OrdinalIgnoreCase) &&
+                    !u!.Contains(".i2p", StringComparison.OrdinalIgnoreCase))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
+    Task<bool> clearnetTask = clearnetUrls.Count > 0
+        ? CheckClearnetUrlsAsync(clearnetUrls, checker)
+        : Task.FromResult(false);
+
+    // ── 2. Build onion task (Link2) ───────────────────────────────────────
+    // If Tor is unavailable, return false (skip — do NOT treat as offline)
+    Task<bool> onionTask =
+        torAvailable &&
+        !string.IsNullOrWhiteSpace(dirEntry.Link2) &&
+        dirEntry.Link2.Contains(".onion", StringComparison.OrdinalIgnoreCase)
+            ? CheckOnionUrlAsync(dirEntry.Link2, torChecker)
+            : Task.FromResult(false); // skipped = not offline
+
+    // ── 3. Run both concurrently ──────────────────────────────────────────
+    var results = await Task.WhenAll(clearnetTask, onionTask);
+
+    bool clearnetOffline = results[0];
+    bool onionOffline = results[1];
+
+    if (clearnetOffline || onionOffline)
+        await CreateOfflineSubmissionIfNotExists(dirEntry, scopedSubmissionRepo, clearnetOffline, onionOffline);
 }
 
 async Task CreateOfflineSubmissionIfNotExists(
     DirectoryEntry entry,
-    ISubmissionRepository submissionRepository)
+    ISubmissionRepository submissionRepository,
+    bool clearnetOffline,
+    bool onionOffline)
 {
-    // Check if there's already a pending "offline" submission for this entry
     var existingSubmission = await submissionRepository.GetByLinkAndStatusAsync(entry.Link, SubmissionStatus.Pending);
 
     if (existingSubmission != null && existingSubmission.Note?.Contains(SiteOfflineMessage) == true)
@@ -77,36 +176,34 @@ async Task CreateOfflineSubmissionIfNotExists(
         return;
     }
 
-    // Prepare the note, only appending " | site offline" if the current note isn't empty
-    var newNote = string.IsNullOrWhiteSpace(entry.Note)
-        ? SiteOfflineMessage
-        : $"{entry.Note} | {SiteOfflineMessage}";
+    // Build a specific offline reason based on which links are down
+    var offlineReason = (clearnetOffline, onionOffline) switch
+    {
+        (true, true) => "site offline (clearnet and tor link offline)",
+        (true, false) => "site offline (clearnet link offline)",
+        (false, true) => "site offline (tor link offline)",
+        _ => SiteOfflineMessage
+    };
 
-    // ✅ Carry forward "real tag data" if your DirectoryEntry has it.
-    // You currently set Tags = entry.Tags, but in your Submission flow the checkbox tags live in SelectedTagIdsCsv.
-    // Only set these if your DirectoryEntry actually has them.
+    var newNote = string.IsNullOrWhiteSpace(entry.Note)
+        ? offlineReason
+        : $"{entry.Note} | {offlineReason}";
+
     string? selectedTagIdsCsv = null;
     try
     {
-        // If your DirectoryEntry has SelectedTagIdsCsv (common in your newer flow), copy it.
-        // If it doesn't exist on DirectoryEntry, just leave null.
         var prop = entry.GetType().GetProperty("SelectedTagIdsCsv");
         if (prop != null)
-        {
             selectedTagIdsCsv = prop.GetValue(entry) as string;
-        }
     }
     catch
     {
         selectedTagIdsCsv = null;
     }
 
-    // ✅ Related links: your Submission stores these in RelatedLinksJson (via the RelatedLinks property).
-    // If DirectoryEntry has related links (either json or a list), copy them.
     List<string> relatedLinks = new List<string>();
     try
     {
-        // If your DirectoryEntry has RelatedLinks (List<string>) copy it
         var relatedProp = entry.GetType().GetProperty("RelatedLinks");
         if (relatedProp != null)
         {
@@ -121,7 +218,6 @@ async Task CreateOfflineSubmissionIfNotExists(
         }
         else
         {
-            // Or if it has RelatedLinksJson, copy/deserialize it
             var jsonProp = entry.GetType().GetProperty("RelatedLinksJson");
             if (jsonProp != null)
             {
@@ -139,16 +235,12 @@ async Task CreateOfflineSubmissionIfNotExists(
         relatedLinks = new List<string>();
     }
 
-    // Create a new submission with the appropriate details
     var submission = new Submission
     {
-        // core
         SubmissionStatus = SubmissionStatus.Pending,
         DirectoryEntryId = entry.DirectoryEntryId,
         SubCategoryId = entry.SubCategoryId,
         DirectoryStatus = DirectoryStatus.Removed,
-
-        // content copy
         Name = entry.Name,
         Link = entry.Link,
         Link2 = entry.Link2,
@@ -162,94 +254,15 @@ async Task CreateOfflineSubmissionIfNotExists(
         ProofLink = entry.ProofLink,
         VideoLink = entry.VideoLink,
         FoundedDate = entry.FoundedDate,
-
-        // notes
         Note = newNote,
         NoteToAdmin = "(automated submission)",
-
-        // tags
-        Tags = entry.Tags,                 // typed tags (legacy / display)
-        SelectedTagIdsCsv = selectedTagIdsCsv, // ✅ checkbox tags (modern flow)
-
-        // related links (writes RelatedLinksJson via setter)
+        Tags = entry.Tags,
+        SelectedTagIdsCsv = selectedTagIdsCsv,
         RelatedLinks = relatedLinks,
-
-        // keep these empty for automation
         SuggestedSubCategory = null,
         IpAddress = null
     };
 
     await submissionRepository.CreateAsync(submission);
-    Console.WriteLine($"Created submission for entry ID {entry.DirectoryEntryId} marked as '{SiteOfflineMessage}'.");
-}
-
-async Task CheckAndSubmitAsync(
-    (int DirectoryEntryId, string Link) entry,
-    IServiceProvider rootProvider)
-{
-    using var scope = rootProvider.CreateScope();
-
-    var scopedEntriesRepo = scope.ServiceProvider.GetRequiredService<IDirectoryEntryRepository>();
-    var scopedSubmissionRepo = scope.ServiceProvider.GetRequiredService<ISubmissionRepository>();
-    var checker = scope.ServiceProvider.GetRequiredService<WebPageChecker>();
-
-    // Load full entry so we can read Link + LinkA
-    var dirEntry = await scopedEntriesRepo.GetByIdAsync(entry.DirectoryEntryId);
-    if (dirEntry == null)
-    {
-        Console.WriteLine($"Entry {entry.DirectoryEntryId} not found.");
-        return;
-    }
-
-    // Build list of URLs to check (Link + LinkA if present), skip onion/i2p/empty, dedupe
-    var urlsToCheck = new[] { dirEntry.Link, dirEntry.LinkA }
-        .Where(u => !string.IsNullOrWhiteSpace(u))
-        .Where(u => !u.Contains(".onion", StringComparison.OrdinalIgnoreCase) &&
-                    !u.Contains(".i2p", StringComparison.OrdinalIgnoreCase))
-        .Distinct(StringComparer.OrdinalIgnoreCase)
-        .ToList();
-
-    if (urlsToCheck.Count == 0)
-    {
-        Console.WriteLine($"Entry {dirEntry.DirectoryEntryId} has only onion/i2p or empty URLs. Skipping.");
-        return;
-    }
-
-    // Offline if ANY eligible URL is offline (404/timeout/invalid/etc.)
-    bool anyOffline = false;
-
-    foreach (var url in urlsToCheck)
-    {
-        bool isOnline = false;
-
-        try
-        {
-            if (Uri.TryCreate(url, UriKind.Absolute, out var uri))
-            {
-                isOnline = await checker.IsOnlineAsync(uri);
-            }
-            else
-            {
-                // Invalid URL: treat as offline
-                isOnline = false;
-            }
-        }
-        catch
-        {
-            isOnline = false;
-        }
-
-        Console.WriteLine($"{url} is {(isOnline ? "online" : SiteOfflineMessage)}");
-
-        if (!isOnline)
-        {
-            anyOffline = true;
-            break; // short-circuit on first offline URL
-        }
-    }
-
-    if (anyOffline)
-    {
-        await CreateOfflineSubmissionIfNotExists(dirEntry, scopedSubmissionRepo);
-    }
+    Console.WriteLine($"Created submission for entry ID {entry.DirectoryEntryId}: '{offlineReason}'.");
 }
