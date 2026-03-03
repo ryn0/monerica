@@ -1,5 +1,6 @@
 ﻿using DirectoryManager.Data.Enums;
 using DirectoryManager.Data.Models.TransferModels;
+using DirectoryManager.Data.Repositories.Implementations;
 using DirectoryManager.Data.Repositories.Interfaces;
 using DirectoryManager.DisplayFormatting.Enums;
 using DirectoryManager.DisplayFormatting.Helpers;
@@ -7,7 +8,9 @@ using DirectoryManager.DisplayFormatting.Models;
 using DirectoryManager.Utilities.Helpers;
 using DirectoryManager.Web.Constants;
 using DirectoryManager.Web.Models;
+using DirectoryManager.Web.Services.Implementations;
 using DirectoryManager.Web.Services.Interfaces;
+using HarfBuzzSharp;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Memory;
@@ -15,7 +18,7 @@ using Microsoft.Extensions.Caching.Memory;
 namespace DirectoryManager.Web.Controllers
 {
     [Route("tagged")]
-    public class TagController : Controller
+    public class TagController : BaseController
     {
         private const int PageSize = Constants.IntegerConstants.MaxPageSize;
 
@@ -34,7 +37,11 @@ namespace DirectoryManager.Web.Controllers
             ICacheService cacheService,
             ISponsoredListingRepository sponsoredListingRepository,
             IDirectoryEntryReviewRepository entryReviewsRepo,
+            ITrafficLogRepository trafficLogRepository,
+            IUserAgentCacheService userAgentCacheService,
+            IDirectoryEntrySelectionRepository directoryEntrySelectionRepository,
             IMemoryCache cache)
+              : base(trafficLogRepository, userAgentCacheService, cache)
         {
             this.tagRepo = tagRepo ?? throw new ArgumentNullException(nameof(tagRepo));
             this.entryTagRepo = entryTagRepo ?? throw new ArgumentNullException(nameof(entryTagRepo));

@@ -109,7 +109,7 @@ public class DirectoryFilterController : Controller
             q.Page = 1;
         }
 
-        // ✅ NEW: if querystring has an invalid Sort value, fall back safely
+        // if querystring has an invalid Sort value, fall back safely
         if (!Enum.IsDefined(typeof(DirectoryFilterSort), q.Sort))
         {
             q.Sort = DirectoryFilterSort.Newest;
@@ -120,10 +120,10 @@ public class DirectoryFilterController : Controller
         if (q.Statuses is null || q.Statuses.Count == 0)
         {
             q.Statuses = new List<DirectoryStatus>
-        {
-            DirectoryStatus.Admitted,
-            DirectoryStatus.Verified
-        };
+            {
+                DirectoryStatus.Admitted,
+                DirectoryStatus.Verified
+            };
         }
     }
 
@@ -292,7 +292,7 @@ public class DirectoryFilterController : Controller
     }
 
     // -------------------------
-    // Sponsor models for filter page (exact same logic, just extracted)
+    // Sponsor models for filter page
     // -------------------------
     private async Task<(CategorySponsorModel? category, SubcategorySponsorModel? subcategory)> GetSponsorModelsAsync(
         DirectoryFilterQuery q,
@@ -350,26 +350,19 @@ public class DirectoryFilterController : Controller
         string link2Name,
         string link3Name)
     {
-        // IMPORTANT: match your real route
-        // If your profile route is different, change this one line.
         string itemPath = DirectoryManager.DisplayFormatting.Helpers.FormattingHelper.ListingPath(e.DirectoryEntryKey);
 
         return new DirectoryManager.DisplayFormatting.Models.DirectoryEntryViewModel
         {
             DateOption = DirectoryManager.DisplayFormatting.Enums.DateDisplayOption.NotDisplayed,
-
-            // Sponsors on filter page should link to profile so (count) -> #reviews works
             LinkType = DirectoryManager.DisplayFormatting.Enums.LinkType.ListingPage,
             ItemPath = itemPath,
 
-            // ✅ needed for /site/{key}
             DirectoryEntryKey = e.DirectoryEntryKey,
 
-            // dates
             CreateDate = e.CreateDate,
             UpdateDate = e.UpdateDate,
 
-            // links (+ affiliate variants if your partial expects them)
             Link = e.Link,
             LinkA = e.LinkA,
 
@@ -382,7 +375,6 @@ public class DirectoryFilterController : Controller
             Link2Name = link2Name,
             Link3Name = link3Name,
 
-            // main fields
             Name = e.Name,
             Contact = e.Contact,
             Description = e.Description,
@@ -396,18 +388,16 @@ public class DirectoryFilterController : Controller
             Note = e.Note,
             Processor = e.Processor,
 
-            // keep SubCategory if you want breadcrumbs etc in some render modes
             SubCategory = e.SubCategory,
             SubCategoryId = e.SubCategoryId,
 
-            // sponsor flags
             IsSponsored = true,
             DisplayAsSponsoredItem = false
         };
     }
 
     // -------------------------
-    // Cache helper (NOW adds prefix invalidation token)
+    // Cache helper
     // -------------------------
     private static void SetCachePolicy(ICacheEntry cacheEntry, string prefix)
     {
@@ -456,7 +446,7 @@ public class DirectoryFilterController : Controller
     }
 
     // -------------------------
-    // Tag sanitizer (exact same logic)
+    // Tag sanitizer
     // -------------------------
     private async Task SanitizeTagIdsForCategoryAsync(DirectoryFilterQuery q)
     {

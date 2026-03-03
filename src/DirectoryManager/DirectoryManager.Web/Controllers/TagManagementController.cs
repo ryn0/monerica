@@ -156,6 +156,7 @@ namespace DirectoryManager.Web.Controllers.Management
             await this.tagRepo.DeleteAsync(id);
 
             this.TempData["TagMessage"] = "Tag deleted.";
+            this.ClearCachedItems();   // ← was missing, now added
             return this.RedirectToAction(nameof(this.Index));
         }
     }
