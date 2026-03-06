@@ -185,7 +185,7 @@ namespace DirectoryManager.Web.Controllers
 
                 var directoryItemLastMod = new[] { baseLastMod, reviewLastMod, replyLastMod }.Max();
 
-                var listingPath = FormattingHelper.ListingPath(entry.DirectoryEntryKey);
+                var listingPath = UrlBuilder.ListingPath(entry.DirectoryEntryKey);
                 var listingUrl = $"{domain}{listingPath}";
 
                 // Base listing URL

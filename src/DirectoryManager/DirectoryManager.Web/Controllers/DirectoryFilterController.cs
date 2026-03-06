@@ -3,6 +3,7 @@ using DirectoryManager.Data.Models;
 using DirectoryManager.Data.Models.TransferModels;
 using DirectoryManager.Data.Repositories.Interfaces;
 using DirectoryManager.DisplayFormatting.Helpers;
+using DirectoryManager.Utilities.Helpers;
 using DirectoryManager.Web.Constants;
 using DirectoryManager.Web.Helpers;
 using DirectoryManager.Web.Models;
@@ -350,7 +351,7 @@ public class DirectoryFilterController : Controller
         string link2Name,
         string link3Name)
     {
-        string itemPath = DirectoryManager.DisplayFormatting.Helpers.FormattingHelper.ListingPath(e.DirectoryEntryKey);
+        string itemPath = UrlBuilder.ListingPath(e.DirectoryEntryKey);
 
         return new DirectoryManager.DisplayFormatting.Models.DirectoryEntryViewModel
         {

@@ -75,7 +75,7 @@
 
     string BuildListingUrlWithAnchorAndPage(string entryKey, int page, string anchor, string? queryString = null)
     {
-        var basePath = FormattingHelper.ListingPath(entryKey); // "/site/xyz"
+        var basePath = UrlBuilder.ListingPath(entryKey); // "/site/xyz"
         if (!basePath.StartsWith("/")) basePath = "/" + basePath;
 
         var qs = string.IsNullOrWhiteSpace(queryString)
@@ -379,7 +379,7 @@
                     var listingName = e.Name ?? "Listing";
                     var oneLine = StringHelpers.TruncateAtWord((r.Body ?? string.Empty).ReplaceLineEndings(" "), 100);
 
-                    var listingUrl = UrlResolver.ResolveToRoot(FormattingHelper.ListingPath(e.DirectoryEntryKey));
+                    var listingUrl = UrlResolver.ResolveToRoot(UrlBuilder.ListingPath(e.DirectoryEntryKey));
 
                     var pageNum = reviewPageMap.TryGetValue(r.DirectoryEntryReviewId, out var p) ? p : 1;
                     var reviewAnchorUrl = BuildListingUrlWithAnchorAndPage(

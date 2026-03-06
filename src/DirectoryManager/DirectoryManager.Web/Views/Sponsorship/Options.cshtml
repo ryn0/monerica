@@ -1,5 +1,6 @@
 ﻿@using DirectoryManager.Data.Enums
 @using DirectoryManager.DisplayFormatting.Helpers
+@using DirectoryManager.Utilities.Helpers
 @using DirectoryManager.Web.Constants
 @using DirectoryManager.Web.Models.Sponsorship
 @inject DirectoryManager.Web.Services.Interfaces.ICacheService cacheHelper
@@ -10,7 +11,7 @@
     ViewData[StringConstants.TitleHeader] = "Sponsorship Options";
 
     var siteUrl = !string.IsNullOrWhiteSpace(Model.DirectoryEntryKey)
-        ? FormattingHelper.ListingPath(Model.DirectoryEntryKey)
+        ? UrlBuilder.ListingPath(Model.DirectoryEntryKey)
         : "";
 
     string checkoutUrl = Url.Action("SelectListing", "SponsoredListing") ?? "/sponsoredlisting/selectlisting";

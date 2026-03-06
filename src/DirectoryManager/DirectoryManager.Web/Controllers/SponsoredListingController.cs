@@ -61,6 +61,8 @@ namespace DirectoryManager.Web.Controllers
         private readonly ICacheService cacheService;
         private readonly IAffiliateAccountRepository affiliateRepo;
         private readonly IAffiliateCommissionRepository commissionRepo;
+        private readonly IDirectoryEntryReviewRepository reviewRepository;
+        private readonly IUrlResolutionService urlResolutionService;
         private readonly ILogger<SponsoredListingController> logger;
 
         public SponsoredListingController(
@@ -79,6 +81,8 @@ namespace DirectoryManager.Web.Controllers
             ICacheService cacheService,
             IAffiliateAccountRepository affiliateRepo,
             IAffiliateCommissionRepository commissionRepo,
+            IDirectoryEntryReviewRepository reviewRepository,
+            IUrlResolutionService urlResolutionService,
             ILogger<SponsoredListingController> logger)
             : base(trafficLogRepository, userAgentCacheService, cache)
         {
@@ -96,6 +100,8 @@ namespace DirectoryManager.Web.Controllers
             this.logger = logger;
             this.affiliateRepo = affiliateRepo;
             this.commissionRepo = commissionRepo;
+            this.reviewRepository = reviewRepository;
+            this.urlResolutionService = urlResolutionService;
         }
 
         [Route("advertise")]
@@ -1408,6 +1414,63 @@ namespace DirectoryManager.Web.Controllers
             };
 
             return this.View("activelistings", model);
+        }
+
+        [AllowAnonymous]
+        [Route("sponsoredlisting/activesponsorjson")]
+        [HttpGet]
+        public async Task<IActionResult> ActiveSponsorJsonAsync()
+        {
+            // Allow any origin to read this — it's public data consumed by moneropricenow.com
+            this.Response.Headers["Access-Control-Allow-Origin"] = "*";
+
+            var ct = this.HttpContext.RequestAborted;
+
+            // Same canonical domain used by SetCanonicalAsync throughout the site
+            var canonicalDomain = await this.cacheService
+                .GetSnippetAsync(SiteConfigSetting.CanonicalDomain);
+
+            var listings = await this.sponsoredListingRepository.GetAllActiveSponsorsAsync();
+
+            var result = new List<object>();
+
+            foreach (var l in listings)
+            {
+                var entry = l.DirectoryEntry;
+                if (entry == null)
+                {
+                    continue;
+                }
+
+                // Pull live review stats from the repo (approved only)
+                var reviewCount = await this.reviewRepository
+                    .CountApprovedForEntryAsync(entry.DirectoryEntryId, ct);
+
+                var reviewRating = await this.reviewRepository
+                    .AverageRatingForEntryApprovedAsync(entry.DirectoryEntryId, ct);
+
+                // e.g. https://yoursite.com/site/cce-cash#reviews
+                var reviewLink = UrlBuilder.CombineUrl(
+                    canonicalDomain,
+                    UrlBuilder.ListingReviewsPath(entry.DirectoryEntryKey));
+
+                result.Add(new
+                {
+                    name = entry.Name ?? string.Empty,
+                    link = entry.Link ?? string.Empty,
+                    expirationDate = l.CampaignEndDate.ToString("yyyy-MM-ddTHH:mm:ssZ"),
+                    reviewRating = reviewRating.HasValue
+                                        ? Math.Round(reviewRating.Value, 1)
+                                        : (double?)null,
+                    reviewCount,
+                    reviewLink,
+                    description = entry.Description ?? string.Empty,
+                    note = entry.Note ?? string.Empty,
+                    sponsorshipType = l.SponsorshipType.ToString(),
+                });
+            }
+
+            return this.Json(result);
         }
 
         [Route("sponsoredlisting/list/{page?}")]

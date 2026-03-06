@@ -14,6 +14,16 @@
                 sitePageId);
         }
 
+        public static string ListingPath(string directoryEntryKey)
+        {
+            return string.Format("/site/{0}", directoryEntryKey);
+        }
+
+        public static string ListingReviewsPath(string directoryEntryKey)
+        {
+            return string.Format("/site/{0}#reviews", directoryEntryKey);
+        }
+
         public static string CombineUrl(string domain, string path)
         {
             // Trim any trailing slashes from the domain and leading slashes from the path

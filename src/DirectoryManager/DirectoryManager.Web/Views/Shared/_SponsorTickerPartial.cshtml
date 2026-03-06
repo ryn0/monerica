@@ -1,12 +1,13 @@
 ﻿@using DirectoryManager.Data.Models.TransferModels
 @using DirectoryManager.DisplayFormatting.Helpers
+@using DirectoryManager.Utilities.Helpers
 @model List<SponsorTickerItemVm>
 
 @{
     // Build internal listing link from key (presentation layer)
     string ListingHref(string key)
     {
-        var rel = FormattingHelper.ListingPath(key);   // e.g. "/site/xyz"
+        var rel = UrlBuilder.ListingPath(key);   // e.g. "/site/xyz"
         if (!rel.StartsWith("/")) rel = "/" + rel;
         return rel;
     }

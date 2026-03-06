@@ -1,6 +1,7 @@
 ﻿using DirectoryManager.Data.Models;
 using DirectoryManager.DisplayFormatting.Enums;
 using DirectoryManager.DisplayFormatting.Models;
+using DirectoryManager.Utilities.Helpers;
 
 namespace DirectoryManager.DisplayFormatting.Helpers
 {
@@ -15,7 +16,7 @@ namespace DirectoryManager.DisplayFormatting.Helpers
         {
             return directoryEntries.Select(entry => new DirectoryEntryViewModel
             {
-                ItemPath = FormattingHelper.ListingPath(entry.DirectoryEntryKey),
+                ItemPath = UrlBuilder.ListingPath(entry.DirectoryEntryKey),
                 DateOption = option,
                 IsSponsored = false,
                 Link2Name = link2Name,

@@ -1,6 +1,7 @@
 ﻿@using DirectoryManager.Data.Enums
 @using DirectoryManager.Data.Models
 @using DirectoryManager.Data.Repositories.Interfaces
+@using DirectoryManager.Utilities.Helpers
 @using DirectoryManager.Web.Constants
 @using DirectoryManager.Web.Helpers
 @using DirectoryManager.Web.Models
@@ -104,7 +105,7 @@
                     // identity/routing
                     DirectoryEntryId = catSponsor.DirectoryEntry.DirectoryEntryId,
                     DirectoryEntryKey = catSponsor.DirectoryEntry.DirectoryEntryKey,
-                    ItemPath = DirectoryManager.DisplayFormatting.Helpers.FormattingHelper.ListingPath(catSponsor.DirectoryEntry.DirectoryEntryKey),
+                    ItemPath = UrlBuilder.ListingPath(catSponsor.DirectoryEntry.DirectoryEntryKey),
                     ItemDisplayType = DirectoryManager.DisplayFormatting.Enums.ItemDisplayType.CategorySponsor,
 
                     // dates

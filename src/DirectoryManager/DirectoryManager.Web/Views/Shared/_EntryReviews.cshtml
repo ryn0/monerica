@@ -204,7 +204,7 @@
                     @for (int p = 1; p <= totalPages; p++)
                     {
                         // ✅ single source of truth for listing path: /site/{key}
-                        string basePath = FormattingHelper.ListingPath(entryKey);
+                        string basePath = UrlBuilder.ListingPath(entryKey);
 
                         string rawPath = (p == 1)
                             ? basePath

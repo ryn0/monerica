@@ -1,6 +1,7 @@
 ﻿@using DirectoryManager.Data.Enums
 @using DirectoryManager.Data.Models
 @using DirectoryManager.Data.Repositories.Interfaces
+@using DirectoryManager.Utilities.Helpers
 @using DirectoryManager.Web.Constants
 @using DirectoryManager.Web.Helpers
 @using DirectoryManager.Web.Models
@@ -127,7 +128,7 @@
                     DirectoryEntryKey = catSponsor.DirectoryEntry.DirectoryEntryKey,
 
                     // ✅ needed for (count) link to #reviews if your helper uses ItemPath
-                    ItemPath = DirectoryManager.DisplayFormatting.Helpers.FormattingHelper.ListingPath(catSponsor.DirectoryEntry.DirectoryEntryKey),
+                    ItemPath = UrlBuilder.ListingPath(catSponsor.DirectoryEntry.DirectoryEntryKey),
 
                     IsSponsored = true,
                     DisplayAsSponsoredItem = false,
