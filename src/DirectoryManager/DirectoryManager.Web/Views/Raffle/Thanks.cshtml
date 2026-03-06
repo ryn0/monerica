@@ -1,10 +1,11 @@
-﻿@using DirectoryManager.Web.Constants
+@using DirectoryManager.Web.Constants
 @{
     ViewData[StringConstants.TitleHeader] = "Thank You";
     Layout = "_CenteredLayout";
 
     var msg = TempData["ReviewMessage"] as string;
     var manualFlag = TempData["ReviewNeedsManualReview"] as string;
+    var raffleToken = TempData["RaffleToken"] as string;
 
     string finalMessage;
 
@@ -30,6 +31,22 @@
     <hr />
 
     <p><b>@finalMessage</b></p>
+
+    @if (!string.IsNullOrWhiteSpace(raffleToken))
+    {
+        <div class="alert alert-success mt-3" role="alert">
+            <h4 class="alert-heading">🎉 You're eligible for the raffle!</h4>
+            <p>
+                Your order was verified and your review was automatically approved.
+                You can enter your crypto address below for a chance to win.
+            </p>
+            <hr />
+            <a class="btn btn-success btn-cta"
+               href="@Url.Action("Enter", "Raffle", new { token = raffleToken })">
+                Enter the Raffle →
+            </a>
+        </div>
+    }
 
     @await Html.PartialAsync("_BackToHome")
 }

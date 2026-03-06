@@ -54,6 +54,7 @@ namespace DirectoryManager.Data.DbContextInfo
         public DbSet<AdditionalLink> AdditionalLinks { get; set; }
         public DbSet<ReviewTag> ReviewTags { get; set; }
         public DbSet<DirectoryEntryReviewTag> DirectoryEntryReviewTags { get; set; }
+        public DbSet<DirectoryEntryReviewRaffleEntry> DirectoryEntryReviewRaffleEntries { get; set; }
 
         public DbSet<Processor> Processors { get; set; }
 
@@ -110,6 +111,23 @@ namespace DirectoryManager.Data.DbContextInfo
             ConfigureDirectoryEntryTagIndexes(builder);
 
             ConfigureProcessorIndexes(builder);
+            ConfigureRaffleEntryIndexes(builder);
+
+        }
+
+        private static void ConfigureRaffleEntryIndexes(ModelBuilder builder)
+        {
+            builder.Entity<DirectoryEntryReviewRaffleEntry>(e =>
+            {
+                // One entry per review - enforced at DB level
+                e.HasIndex(x => x.DirectoryEntryReviewId)
+                 .IsUnique()
+                 .HasDatabaseName("UX_RaffleEntry_Review");
+
+                // Fast status-based listing
+                e.HasIndex(x => new { x.Status, x.CreateDate, x.DirectoryEntryReviewRaffleEntryId })
+                 .HasDatabaseName("IX_RaffleEntry_Status_Create_Id");
+            });
         }
 
         private static void ConfigureProcessorIndexes(ModelBuilder builder)
@@ -488,6 +506,12 @@ namespace DirectoryManager.Data.DbContextInfo
                    .WithMany(t => t.ReviewLinks)
                    .HasForeignKey(x => x.ReviewTagId)
                    .OnDelete(DeleteBehavior.Cascade);
+
+            builder.Entity<DirectoryEntryReviewRaffleEntry>()
+                   .HasOne(x => x.DirectoryEntryReview)
+                   .WithMany()
+                   .HasForeignKey(x => x.DirectoryEntryReviewId)
+                   .OnDelete(DeleteBehavior.Cascade);
         }
 
         // =========================================================
@@ -554,6 +578,15 @@ namespace DirectoryManager.Data.DbContextInfo
             {
                 r.ToTable("DirectoryEntryReviews");
                 r.Property(x => x.RowVersion).IsRowVersion();
+            });
+
+            builder.Entity<DirectoryEntryReviewRaffleEntry>(e =>
+            {
+                e.ToTable("DirectoryEntryReviewRaffleEntries");
+                e.Property(x => x.RowVersion).IsRowVersion();
+                e.Property(x => x.CryptoType).HasMaxLength(20).IsRequired();
+                e.Property(x => x.CryptoAddress).HasMaxLength(512).IsRequired();
+                e.Property(x => x.PaymentReference).HasMaxLength(256);
             });
         }
 

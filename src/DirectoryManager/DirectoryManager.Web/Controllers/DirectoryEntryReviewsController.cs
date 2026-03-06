@@ -1,4 +1,4 @@
-﻿using DirectoryManager.Data.Enums;
+using DirectoryManager.Data.Enums;
 using DirectoryManager.Data.Models;
 using DirectoryManager.Data.Models.Reviews;
 using DirectoryManager.Data.Repositories.Interfaces;
@@ -25,7 +25,6 @@ namespace DirectoryManager.Web.Controllers
         private static readonly char[] CodeAlphabet = StringConstants.CodeAlphabet.ToCharArray();
 
         // Prevents double-POST without cookies or JS.
-        // ConcurrentDictionary.TryAdd is atomic; only the first caller for a flowId wins.
         private static readonly ConcurrentDictionary<Guid, bool> SubmittedFlows = new ();
 
         private readonly IMemoryCache cache;
@@ -61,10 +60,10 @@ namespace DirectoryManager.Web.Controllers
         }
 
         [HttpGet("begin")]
-        public IActionResult BeginGet() => this.NotFound(); // don't expose a crawlable GET
+        public IActionResult BeginGet() => this.NotFound();
 
         [HttpPost("begin")]
-        [IgnoreAntiforgeryToken] // static page can't emit a token
+        [IgnoreAntiforgeryToken]
         public IActionResult Begin([FromForm] int directoryEntryId, [FromForm] string? website)
         {
             if (!string.IsNullOrWhiteSpace(website))
@@ -155,15 +154,12 @@ namespace DirectoryManager.Web.Controllers
                 return this.View("SubmitKey");
             }
 
-            // ✅ stronger but still typable:
-            // Store normalized (no dash) and encrypt a friendly formatted version (ABCDE-FGHIJ).
             var expectedNormalized = GenerateChallengeCodeNormalized(IntegerConstants.ChallengeLength);
             var plaintextForUser = FormatChallengeCodeForHumans(expectedNormalized);
             var cipher = this.pgp.EncryptTo(pgpArmored, plaintextForUser);
 
             state.PgpArmored = pgpArmored;
             state.PgpFingerprint = fp;
-
             state.ChallengeCode = expectedNormalized;
             state.ChallengeCiphertext = cipher;
             state.VerifyAttempts = 0;
@@ -208,7 +204,6 @@ namespace DirectoryManager.Web.Controllers
 
             var submitted = NormalizeSubmittedCode(code);
 
-            // ✅ throttle guessing per flow
             state.VerifyAttempts++;
             if (state.VerifyAttempts > IntegerConstants.MaxVerifyAttempts)
             {
@@ -265,8 +260,6 @@ namespace DirectoryManager.Web.Controllers
         [ValidateAntiForgeryToken]
         public async Task<IActionResult> ComposePost(Guid flowId, CreateDirectoryEntryReviewInputModel input, CancellationToken ct)
         {
-            // ✅ Atomic double-submit guard: only the first POST for this flowId proceeds.
-            // A second simultaneous click is silently redirected to Thanks.
             if (!SubmittedFlows.TryAdd(flowId, true))
             {
                 return this.RedirectToAction(nameof(this.Thanks));
@@ -284,12 +277,10 @@ namespace DirectoryManager.Web.Controllers
                 return this.RedirectToAction(nameof(this.VerifyCode), new { flowId });
             }
 
-            // Always trust the flow for the entry id
             input.DirectoryEntryId = flow.DirectoryEntryId;
 
             if (!this.ModelState.IsValid)
             {
-                // ✅ Release the claim so the user can fix their input and resubmit
                 SubmittedFlows.TryRemove(flowId, out _);
                 var entry = await this.directoryEntryRepository.GetByIdAsync(flow.DirectoryEntryId);
                 this.ViewBag.DirectoryEntryName = entry?.Name ?? "Listing";
@@ -298,12 +289,10 @@ namespace DirectoryManager.Web.Controllers
                 return this.View("Compose", input);
             }
 
-            // moderation rules (min detail, no html/scripts, link/blacklist => pending)
             var mod = await this.moderation.EvaluateReviewAsync(input.Body, ct);
 
             if (!mod.IsValid)
             {
-                // ✅ Release the claim so the user can fix their input and resubmit
                 SubmittedFlows.TryRemove(flowId, out _);
                 this.ModelState.AddModelError(nameof(input.Body), mod.ValidationErrorMessage ?? "Invalid content.");
 
@@ -325,7 +314,6 @@ namespace DirectoryManager.Web.Controllers
                 CreatedByUserId = "automated"
             };
 
-            // ✅ single textbox parsing: OrderProof -> OrderId/OrderUrl
             ApplyOrderProof(entity, input.OrderProof);
 
             var hasOrderProof =
@@ -343,7 +331,6 @@ namespace DirectoryManager.Web.Controllers
                 }
             }
 
-            // ✅ moderation still wins
             entity.ModerationStatus = mod.NeedsManualReview
                 ? ReviewModerationStatus.Pending
                 : (hasOrderProof
@@ -352,14 +339,11 @@ namespace DirectoryManager.Web.Controllers
 
             await this.directoryEntryReviewRepository.AddAsync(entity, ct);
 
-            // ✅ If auto-approved via order verification AND it has an OrderId, add the "verified-order" tag
             if (proofAutoApproved &&
                 entity.ModerationStatus == ReviewModerationStatus.Approved &&
                 !string.IsNullOrWhiteSpace(entity.OrderUrl))
             {
                 var tag = await this.reviewTagRepository.GetBySlugAsync(VerifiedOrderTagSlug, ct);
-
-                // Only tag if the tag exists (and optionally enabled)
                 if (tag is not null && tag.IsEnabled)
                 {
                     await this.directoryEntryReviewRepository.EnsureTagAsync(
@@ -369,19 +353,28 @@ namespace DirectoryManager.Web.Controllers
                 }
             }
 
-            // ✅ Your Thanks.cshtml reads TempData["ReviewMessage"]
             this.TempData["ReviewMessage"] = mod.ThankYouMessage;
 
             this.ClearCachedItems();
             this.cache.Remove(CacheKey(flowId));
-            // ✅ flowId tombstone stays in SubmittedFlows — that's intentional.
-            // It's a Guid (16 bytes) and prevents any replay of this flowId.
+
+            // ✅ Auto-approved via verified order proof → go straight to raffle address entry.
+            // The RaffleController handles the already-entered check there.
+            if (proofAutoApproved && entity.ModerationStatus == ReviewModerationStatus.Approved)
+            {
+                var raffleToken = this.CreateRaffleToken(entity.DirectoryEntryReviewId, flow.PgpFingerprint);
+                return this.RedirectToAction("Enter", "Raffle", new { token = raffleToken });
+            }
 
             return this.RedirectToAction(nameof(this.Thanks));
         }
 
         [HttpGet("thanks")]
         public IActionResult Thanks() => this.View();
+
+        // ---------------------------
+        // Admin CRUD
+        // ---------------------------
 
         [HttpGet("")]
         public async Task<IActionResult> Index(int page = 1, int pageSize = 50, CancellationToken ct = default)
@@ -509,7 +502,27 @@ namespace DirectoryManager.Web.Controllers
         }
 
         // =========================
-        // ✅ Order proof auto-approval
+        // Raffle token helpers
+        // =========================
+
+        internal static string RaffleTokenCacheKey(Guid token) => $"raffle-token:{token}";
+
+        private Guid CreateRaffleToken(int reviewId, string fingerprint)
+        {
+            var token = Guid.NewGuid();
+            var state = new RaffleFlowState
+            {
+                ReviewId = reviewId,
+                Fingerprint = fingerprint,
+                ExpiresUtc = DateTime.UtcNow.AddMinutes(IntegerConstants.SessinExpiresMinutes)
+            };
+
+            this.cache.Set(RaffleTokenCacheKey(token), state, state.ExpiresUtc);
+            return token;
+        }
+
+        // =========================
+        // Order proof auto-approval
         // =========================
 
         private async Task<bool> TryVerifyOrderUrlForEntryAsync(DirectoryEntry entry, string orderUrl, CancellationToken ct)
@@ -519,7 +532,6 @@ namespace DirectoryManager.Web.Controllers
                 return false;
             }
 
-            // Listing website must exist and be http(s)
             var entryWebsite = TryGetEntryWebsiteUri(entry);
             if (entryWebsite is null)
             {
@@ -533,34 +545,24 @@ namespace DirectoryManager.Web.Controllers
                 return false;
             }
 
-            // Same domain (host match or subdomain match either direction)
             if (!HostsShareDomain(entryWebsite.Host, orderUri.Host))
             {
                 return false;
             }
 
-            // Basic SSRF safety
             if (!await IsSafePublicHttpTargetAsync(orderUri, ct))
             {
                 return false;
             }
 
-            // Must return HTTP 200 OK
             return await this.UrlReturns200Async(orderUri, ct);
         }
 
         private static Uri? TryGetEntryWebsiteUri(DirectoryEntry entry)
         {
-            // ✅ CHANGE THIS if your field name differs:
-            // e.g. entry.Url, entry.WebsiteUrl, etc.
             var raw = (entry.Link ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(raw)) return null;
 
-            if (string.IsNullOrWhiteSpace(raw))
-            {
-                return null;
-            }
-
-            // If they store "example.com" without scheme, assume https
             if (Uri.TryCreate(raw, UriKind.Absolute, out var abs) &&
                 (abs.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase) ||
                  abs.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase)))
@@ -582,19 +584,8 @@ namespace DirectoryManager.Web.Controllers
         {
             var ha = NormalizeHost(a);
             var hb = NormalizeHost(b);
-
-            if (string.IsNullOrWhiteSpace(ha) || string.IsNullOrWhiteSpace(hb))
-            {
-                return false;
-            }
-
-            if (ha.Equals(hb, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-
-            // allow subdomain either direction:
-            // shop.example.com <-> example.com
+            if (string.IsNullOrWhiteSpace(ha) || string.IsNullOrWhiteSpace(hb)) return false;
+            if (ha.Equals(hb, StringComparison.OrdinalIgnoreCase)) return true;
             return ha.EndsWith("." + hb, StringComparison.OrdinalIgnoreCase) ||
                    hb.EndsWith("." + ha, StringComparison.OrdinalIgnoreCase);
         }
@@ -602,12 +593,7 @@ namespace DirectoryManager.Web.Controllers
         private static string NormalizeHost(string host)
         {
             var h = (host ?? string.Empty).Trim().TrimEnd('.');
-
-            if (h.StartsWith("www.", StringComparison.OrdinalIgnoreCase))
-            {
-                h = h.Substring(4);
-            }
-
+            if (h.StartsWith("www.", StringComparison.OrdinalIgnoreCase)) h = h.Substring(4);
             return h;
         }
 
@@ -617,26 +603,16 @@ namespace DirectoryManager.Web.Controllers
             {
                 var client = this.httpClientFactory.CreateClient(OrderProofHttpClientName);
 
-                // Prefer HEAD (cheap); fallback to GET if not allowed
                 using (var head = new HttpRequestMessage(HttpMethod.Head, uri))
                 using (var resp = await client.SendAsync(head, HttpCompletionOption.ResponseHeadersRead, ct))
                 {
-                    if (resp.StatusCode == HttpStatusCode.OK)
-                    {
-                        return true;
-                    }
-
-                    if (resp.StatusCode != HttpStatusCode.MethodNotAllowed)
-                    {
-                        return false;
-                    }
+                    if (resp.StatusCode == HttpStatusCode.OK) return true;
+                    if (resp.StatusCode != HttpStatusCode.MethodNotAllowed) return false;
                 }
 
                 using (var get = new HttpRequestMessage(HttpMethod.Get, uri))
                 {
-                    // try to avoid downloading a big page
                     get.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 0);
-
                     using var resp2 = await client.SendAsync(get, HttpCompletionOption.ResponseHeadersRead, ct);
                     return resp2.StatusCode == HttpStatusCode.OK;
                 }
@@ -649,29 +625,13 @@ namespace DirectoryManager.Web.Controllers
 
         private static async Task<bool> IsSafePublicHttpTargetAsync(Uri uri, CancellationToken ct)
         {
-            if (uri is null)
-            {
-                return false;
-            }
-
-            if (uri.UserInfo?.Length > 0)
-            {
-                return false;
-            }
-
-            if (uri.IsLoopback)
-            {
-                return false;
-            }
+            if (uri is null) return false;
+            if (uri.UserInfo?.Length > 0) return false;
+            if (uri.IsLoopback) return false;
 
             var host = uri.DnsSafeHost;
+            if (string.IsNullOrWhiteSpace(host)) return false;
 
-            if (string.IsNullOrWhiteSpace(host))
-            {
-                return false;
-            }
-
-            // common local-ish names
             if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
                 host.EndsWith(".local", StringComparison.OrdinalIgnoreCase) ||
                 host.EndsWith(".internal", StringComparison.OrdinalIgnoreCase))
@@ -679,29 +639,19 @@ namespace DirectoryManager.Web.Controllers
                 return false;
             }
 
-            // if host is an IP literal, validate directly
             if (IPAddress.TryParse(host, out var ipLiteral))
             {
                 return !IsPrivateOrDisallowedIp(ipLiteral);
             }
 
-            // resolve DNS and block any private/loopback/link-local/etc
             try
             {
                 var ips = await Dns.GetHostAddressesAsync(host).WaitAsync(ct);
-                if (ips is null || ips.Length == 0)
-                {
-                    return false;
-                }
-
+                if (ips is null || ips.Length == 0) return false;
                 foreach (var ip in ips)
                 {
-                    if (IsPrivateOrDisallowedIp(ip))
-                    {
-                        return false;
-                    }
+                    if (IsPrivateOrDisallowedIp(ip)) return false;
                 }
-
                 return true;
             }
             catch
@@ -712,148 +662,77 @@ namespace DirectoryManager.Web.Controllers
 
         private static bool IsPrivateOrDisallowedIp(IPAddress ip)
         {
-            if (IPAddress.IsLoopback(ip))
-            {
-                return true;
-            }
+            if (IPAddress.IsLoopback(ip)) return true;
 
             if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
             {
                 var b = ip.GetAddressBytes();
-
-                // 10.0.0.0/8
-                if (b[0] == 10)
-                {
-                    return true;
-                }
-
-                // 127.0.0.0/8
-                if (b[0] == 127)
-                {
-                    return true;
-                }
-
-                // 169.254.0.0/16 (link-local)
-                if (b[0] == 169 && b[1] == 254)
-                {
-                    return true;
-                }
-
-                // 172.16.0.0/12
-                if (b[0] == 172 && b[1] >= 16 && b[1] <= 31)
-                {
-                    return true;
-                }
-
-                // 192.168.0.0/16
-                if (b[0] == 192 && b[1] == 168)
-                {
-                    return true;
-                }
-
-                // 0.0.0.0/8
-                if (b[0] == 0)
-                {
-                    return true;
-                }
-
-                // 100.64.0.0/10 (CGNAT)
-                if (b[0] == 100 && b[1] >= 64 && b[1] <= 127)
-                {
-                    return true;
-                }
-
+                if (b[0] == 10) return true;
+                if (b[0] == 127) return true;
+                if (b[0] == 169 && b[1] == 254) return true;
+                if (b[0] == 172 && b[1] >= 16 && b[1] <= 31) return true;
+                if (b[0] == 192 && b[1] == 168) return true;
+                if (b[0] == 0) return true;
+                if (b[0] == 100 && b[1] >= 64 && b[1] <= 127) return true;
                 return false;
             }
 
             if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
             {
-                if (ip.IsIPv6LinkLocal || ip.IsIPv6SiteLocal || ip.IsIPv6Multicast)
-                {
-                    return true;
-                }
-
-                // Unique local: fc00::/7
+                if (ip.IsIPv6LinkLocal || ip.IsIPv6SiteLocal || ip.IsIPv6Multicast) return true;
                 var b = ip.GetAddressBytes();
-                if ((b[0] & 0xFE) == 0xFC)
-                {
-                    return true;
-                }
-
-                // ::1 loopback handled above, but keep safe
-                if (ip.Equals(IPAddress.IPv6Loopback))
-                {
-                    return true;
-                }
-
+                if ((b[0] & 0xFE) == 0xFC) return true;
+                if (ip.Equals(IPAddress.IPv6Loopback)) return true;
                 return false;
             }
 
             return true;
         }
 
+        // =========================
+        // Challenge code helpers
+        // =========================
+
         private static string GenerateChallengeCodeNormalized(int length)
         {
-            if (length < 6)
-            {
-                length = 6;
-            }
-
+            if (length < 6) length = 6;
             Span<char> chars = stackalloc char[length];
             for (var i = 0; i < length; i++)
             {
                 chars[i] = CodeAlphabet[RandomNumberGenerator.GetInt32(CodeAlphabet.Length)];
             }
-
             return new string(chars);
         }
 
         private static string FormatChallengeCodeForHumans(string normalized)
         {
-            // 10 chars -> 5-5 (ABCDE-FGHIJ)
-            if (string.IsNullOrWhiteSpace(normalized) || normalized.Length <= 5)
-            {
-                return normalized;
-            }
-
+            if (string.IsNullOrWhiteSpace(normalized) || normalized.Length <= 5) return normalized;
             return normalized.Substring(0, 5) + "-" + normalized.Substring(5);
         }
 
         private static string NormalizeSubmittedCode(string? input)
         {
-            if (string.IsNullOrWhiteSpace(input))
-            {
-                return string.Empty;
-            }
-
+            if (string.IsNullOrWhiteSpace(input)) return string.Empty;
             var sb = new StringBuilder(input.Length);
             foreach (var ch in input.Trim().ToUpperInvariant())
             {
-                if (char.IsLetterOrDigit(ch))
-                {
-                    sb.Append(ch);
-                }
+                if (char.IsLetterOrDigit(ch)) sb.Append(ch);
             }
-
             return sb.ToString();
         }
 
         private static bool CodesMatchConstantTime(string submitted, string expected)
         {
-            if (string.IsNullOrEmpty(submitted) || string.IsNullOrEmpty(expected))
-            {
-                return false;
-            }
-
-            if (submitted.Length != expected.Length)
-            {
-                return false;
-            }
-
+            if (string.IsNullOrEmpty(submitted) || string.IsNullOrEmpty(expected)) return false;
+            if (submitted.Length != expected.Length) return false;
             var a = Encoding.UTF8.GetBytes(submitted);
             var b = Encoding.UTF8.GetBytes(expected);
             return CryptographicOperations.FixedTimeEquals(a, b);
         }
+
+        // =========================
+        // Flow helpers
+        // =========================
 
         private static string CacheKey(Guid flowId) => $"review-flow:{flowId}";
 
@@ -867,7 +746,6 @@ namespace DirectoryManager.Web.Controllers
                 return;
             }
 
-            // absolute http(s)
             if (Uri.TryCreate(s, UriKind.Absolute, out var uri) &&
                 (uri.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase) ||
                  uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase)))
@@ -877,7 +755,6 @@ namespace DirectoryManager.Web.Controllers
                 return;
             }
 
-            // allow "example.com/order/123" without scheme (assume https)
             if (!s.Contains(' ') &&
                 s.Contains('.') &&
                 Uri.TryCreate("https://" + s.TrimStart('/'), UriKind.Absolute, out var uri2) &&
@@ -889,7 +766,6 @@ namespace DirectoryManager.Web.Controllers
                 return;
             }
 
-            // otherwise treat as OrderId
             review.OrderId = s;
             review.OrderUrl = null;
         }
@@ -902,7 +778,6 @@ namespace DirectoryManager.Web.Controllers
                 DirectoryEntryId = directoryEntryId,
                 ExpiresUtc = DateTime.UtcNow.AddMinutes(IntegerConstants.SessinExpiresMinutes)
             };
-
             this.cache.Set(CacheKey(id), state, state.ExpiresUtc);
             return id;
         }

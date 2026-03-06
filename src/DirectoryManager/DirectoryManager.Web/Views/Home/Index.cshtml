@@ -200,6 +200,9 @@
             </ul>
         }
 
+        @Html.Raw(await cacheHelper.GetSnippetAsync(SiteConfigSetting.HtmlNotificationSnippet))
+
+
         @* Newest Additions *@
         @{
             var newest = await directoryEntryRepository.GetNewestAdditions(10);
