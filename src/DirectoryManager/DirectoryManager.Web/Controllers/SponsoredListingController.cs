@@ -48,6 +48,12 @@ namespace DirectoryManager.Web.Controllers
             { PaymentStatus.Test,           5 },
         };
 
+        private static readonly SemaphoreSlim SponsorJsonLock = new (1, 1);
+        private static readonly TimeSpan SponsorJsonTtl = TimeSpan.FromSeconds(60);
+
+        private static object? sponsorJsonCache;
+        private static DateTimeOffset sponsorJsonCachedAt;
+
         private readonly ISubcategoryRepository subCategoryRepository;
         private readonly ICategoryRepository categoryRepository;
         private readonly IDirectoryEntryRepository directoryEntryRepository;
@@ -1416,6 +1422,24 @@ namespace DirectoryManager.Web.Controllers
             return this.View("activelistings", model);
         }
 
+        // =====================================================================
+        // STEP 1: Add these fields to the controller:
+        //
+        //   private readonly IDirectoryEntryReviewRepository reviewRepository;
+        //   private static object?        _sponsorJsonCache;
+        //   private static DateTimeOffset  _sponsorJsonCachedAt;
+        //   private static readonly SemaphoreSlim _sponsorJsonLock = new(1, 1);
+        //   private static readonly TimeSpan      _sponsorJsonTtl  = TimeSpan.FromSeconds(60);
+        //
+        // STEP 2: Add IDirectoryEntryReviewRepository to the constructor and assign:
+        //
+        //   IDirectoryEntryReviewRepository reviewRepository,
+        //   ...
+        //   this.reviewRepository = reviewRepository;
+        //
+        // STEP 3: Add this action after the Current() action:
+        // =====================================================================
+
         [AllowAnonymous]
         [Route("sponsoredlisting/activesponsorjson")]
         [HttpGet]
@@ -1426,51 +1450,73 @@ namespace DirectoryManager.Web.Controllers
 
             var ct = this.HttpContext.RequestAborted;
 
-            // Same canonical domain used by SetCanonicalAsync throughout the site
-            var canonicalDomain = await this.cacheService
-                .GetSnippetAsync(SiteConfigSetting.CanonicalDomain);
-
-            var listings = await this.sponsoredListingRepository.GetAllActiveSponsorsAsync();
-
-            var result = new List<object>();
-
-            foreach (var l in listings)
+            // ── 60-second in-memory cache (double-check locking) ─────────────
+            if (sponsorJsonCache != null && DateTimeOffset.UtcNow - sponsorJsonCachedAt < SponsorJsonTtl)
             {
-                var entry = l.DirectoryEntry;
-                if (entry == null)
-                {
-                    continue;
-                }
-
-                // Pull live review stats from the repo (approved only)
-                var reviewCount = await this.reviewRepository
-                    .CountApprovedForEntryAsync(entry.DirectoryEntryId, ct);
-
-                var reviewRating = await this.reviewRepository
-                    .AverageRatingForEntryApprovedAsync(entry.DirectoryEntryId, ct);
-
-                // e.g. https://yoursite.com/site/cce-cash#reviews
-                var reviewLink = UrlBuilder.CombineUrl(
-                    canonicalDomain,
-                    UrlBuilder.ListingReviewsPath(entry.DirectoryEntryKey));
-
-                result.Add(new
-                {
-                    name = entry.Name ?? string.Empty,
-                    link = entry.Link ?? string.Empty,
-                    expirationDate = l.CampaignEndDate.ToString("yyyy-MM-ddTHH:mm:ssZ"),
-                    reviewRating = reviewRating.HasValue
-                                        ? Math.Round(reviewRating.Value, 1)
-                                        : (double?)null,
-                    reviewCount,
-                    reviewLink,
-                    description = entry.Description ?? string.Empty,
-                    note = entry.Note ?? string.Empty,
-                    sponsorshipType = l.SponsorshipType.ToString(),
-                });
+                return this.Json(sponsorJsonCache);
             }
 
-            return this.Json(result);
+            await SponsorJsonLock.WaitAsync(ct);
+            try
+            {
+                // Re-check inside the lock in case another thread just populated it
+                if (sponsorJsonCache != null && DateTimeOffset.UtcNow - sponsorJsonCachedAt < SponsorJsonTtl)
+                {
+                    return this.Json(sponsorJsonCache);
+                }
+
+                // ── Build the payload ─────────────────────────────────────────
+                var canonicalDomain = await this.cacheService
+                    .GetSnippetAsync(SiteConfigSetting.CanonicalDomain);
+
+                var listings = await this.sponsoredListingRepository.GetAllActiveSponsorsAsync();
+
+                var result = new List<object>();
+
+                foreach (var l in listings)
+                {
+                    var entry = l.DirectoryEntry;
+                    if (entry == null)
+                    {
+                        continue;
+                    }
+
+                    var reviewCount = await this.reviewRepository
+                        .CountApprovedForEntryAsync(entry.DirectoryEntryId, ct);
+
+                    var reviewRating = await this.reviewRepository
+                        .AverageRatingForEntryApprovedAsync(entry.DirectoryEntryId, ct);
+
+                    var reviewLink = UrlBuilder.CombineUrl(
+                        canonicalDomain,
+                        UrlBuilder.ListingReviewsPath(entry.DirectoryEntryKey));
+
+                    result.Add(new
+                    {
+                        name = entry.Name ?? string.Empty,
+                        link = entry.Link ?? string.Empty,
+                        expirationDate = l.CampaignEndDate.ToString("yyyy-MM-ddTHH:mm:ssZ"),
+                        // AwayFromZero: 3.25 → 3.3, not 3.2 (Math.Round default is banker's rounding)
+                        reviewRating = reviewRating.HasValue
+                                            ? Math.Round(reviewRating.Value, 1, MidpointRounding.AwayFromZero)
+                                            : (double?)null,
+                        reviewCount,
+                        reviewLink,
+                        description = entry.Description ?? string.Empty,
+                        note = entry.Note ?? string.Empty,
+                        sponsorshipType = l.SponsorshipType.ToString(),
+                    });
+                }
+
+                sponsorJsonCache = result;
+                sponsorJsonCachedAt = DateTimeOffset.UtcNow;
+
+                return this.Json(result);
+            }
+            finally
+            {
+                SponsorJsonLock.Release();
+            }
         }
 
         [Route("sponsoredlisting/list/{page?}")]
